@@ -69,7 +69,7 @@ def create_bully_manager(app):
     """Initialize Bully consensus manager"""
     from bully.bully_node import BullyNode
     from config import Config
-    from bully.id_generator import get_or_create_node_id
+    from bully.id_generator import get_or_create_node_id_v2
 
     logger.info("Initializing Bully manager...")
 
@@ -83,14 +83,24 @@ def create_bully_manager(app):
 
     # Determine node_id
     if cluster_mode == 'dynamic':
-        # Dynamic mode: auto-generate ID
-        node_id = get_or_create_node_id()
-        logger.info(f"Dynamic mode - Auto-generated Node ID: {node_id}")
+        # FASE 9: Dynamic mode with sequential IDs (1, 2, 3...)
+        # Uses delay + discovery to ensure unique sequential IDs
+        logger.info("Dynamic mode - Starting sequential ID generation...")
+        node_id = get_or_create_node_id_v2()
+        logger.info(f"Dynamic mode - Assigned Node ID: {node_id}")
+
+        # Update Config ports based on dynamically assigned ID
+        tcp_port = 5555 + (node_id % 1000)
+        udp_port = 6000 + (node_id % 1000)
+        Config.NODE_ID = node_id
+        Config.TCP_PORT = tcp_port
+        Config.UDP_PORT = udp_port
+        logger.info(f"Ports assigned - TCP: {tcp_port}, UDP: {udp_port}")
 
         bully_manager = BullyNode(
             node_id=node_id,
-            tcp_port=Config.TCP_PORT,
-            udp_port=Config.UDP_PORT,
+            tcp_port=tcp_port,
+            udp_port=udp_port,
             use_discovery=True,
             multicast_group=Config.MULTICAST_GROUP,
             multicast_port=Config.MULTICAST_PORT

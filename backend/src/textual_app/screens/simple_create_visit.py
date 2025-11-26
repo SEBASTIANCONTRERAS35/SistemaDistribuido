@@ -19,6 +19,10 @@ class SimpleCreateVisitScreen(ModalScreen):
 
     BINDINGS = [
         Binding("escape", "dismiss", "Cancelar", show=True),
+        Binding("down", "focus_next", "↓ Siguiente", show=False),
+        Binding("up", "focus_previous", "↑ Anterior", show=False),
+        Binding("left", "focus_previous", "←", show=False),
+        Binding("right", "focus_next", "→", show=False),
     ]
 
     CSS = """
@@ -130,6 +134,13 @@ class SimpleCreateVisitScreen(ModalScreen):
             self.create_visit()
         elif event.button.id == "btn-cancel":
             self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Enter en último campo crea visita, otros campos avanzan"""
+        if event.input.id == "input-sintomas":
+            self.create_visit()
+        else:
+            self.action_focus_next()
 
     @work(exclusive=True)
     async def create_visit(self) -> None:

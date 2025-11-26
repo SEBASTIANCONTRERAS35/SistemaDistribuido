@@ -25,18 +25,21 @@ logger = logging.getLogger(__name__)
 
 def get_local_ip() -> str:
     """
-    Detecta IP local automáticamente. Funciona en VMs Debian.
+    Detecta IP local robustamente para VMs con múltiples interfaces.
 
-    Orden de prioridad:
-    1. Via routing a 8.8.8.8 (más confiable)
-    2. Via hostname
-    3. Via comando 'hostname -I' (Linux)
+    FASE 9: Mejorado para evitar IPs compartidas (.11, .1, etc.)
+
+    Prioridad:
+    1. IP usada para routing externo (8.8.8.8) - más confiable
+    2. Primera IP válida de hostname -I (filtrando .1, .11, .255)
+    3. IP de hostname
     4. Fallback a 127.0.0.1
 
     Returns:
-        str: IP local detectada
+        str: IP local detectada (única para esta VM)
     """
-    # 1. Intentar via routing (más confiable en VMs)
+    # 1. Via routing (MÁS CONFIABLE para VMs)
+    # Esta es la IP que realmente se usa para comunicación de red
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(2.0)
@@ -49,7 +52,35 @@ def get_local_ip() -> str:
     except Exception:
         pass
 
-    # 2. Intentar via hostname
+    # 2. Via hostname -I (Linux) - preferir IPs que NO sean compartidas
+    try:
+        result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=5)
+        ips = result.stdout.strip().split()
+
+        # Filtrar IPs no deseadas
+        valid_ips = []
+        for ip in ips:
+            if ip and not ip.startswith('127.') and '.' in ip:
+                last_octet = ip.split('.')[-1]
+                # Evitar IPs comunes de gateway (.1) o compartidas (.11)
+                # Estas IPs suelen ser iguales en múltiples VMs
+                if last_octet not in ('1', '11', '255', '0'):
+                    valid_ips.append(ip)
+
+        # Si hay IPs válidas, usar la primera
+        if valid_ips:
+            logger.info(f"[DISCOVERY] Detected IP via hostname -I (filtered): {valid_ips[0]}")
+            return valid_ips[0]
+
+        # Si no hay IPs filtradas, usar cualquier IP no-loopback
+        for ip in ips:
+            if ip and not ip.startswith('127.') and '.' in ip:
+                logger.info(f"[DISCOVERY] Detected IP via hostname -I (fallback): {ip}")
+                return ip
+    except Exception:
+        pass
+
+    # 3. Via hostname
     try:
         ip = socket.gethostbyname(socket.gethostname())
         if ip and not ip.startswith('127.'):
@@ -58,19 +89,8 @@ def get_local_ip() -> str:
     except Exception:
         pass
 
-    # 3. Buscar en interfaces de red (Linux - Debian)
-    try:
-        result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=2)
-        ips = result.stdout.strip().split()
-        for ip in ips:
-            if ip and not ip.startswith('127.') and '.' in ip:
-                logger.info(f"[DISCOVERY] Detected IP via hostname -I: {ip}")
-                return ip
-    except Exception:
-        pass
-
     # 4. Fallback
-    logger.warning("[DISCOVERY] Could not detect IP, using 127.0.0.1")
+    logger.warning("[DISCOVERY] Could not detect valid IP, using 127.0.0.1")
     return "127.0.0.1"
 
 
@@ -174,16 +194,8 @@ class NodeDiscovery:
         # Bind al puerto multicast
         self.recv_socket.bind(('', self.multicast_port))
 
-        # Unirse al grupo multicast usando la IP local ya detectada
-        try:
-            mreq = struct.pack("4s4s", socket.inet_aton(self.multicast_group), socket.inet_aton(self.local_ip))
-            logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Joining multicast on interface {self.local_ip}")
-        except Exception as e:
-            # Fallback a INADDR_ANY
-            mreq = struct.pack("4sl", socket.inet_aton(self.multicast_group), socket.INADDR_ANY)
-            logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Joining multicast on INADDR_ANY (fallback)")
-
-        self.recv_socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        # FASE 9: Unirse al grupo multicast en TODAS las interfaces
+        self._join_multicast_all_interfaces()
 
         # Crear socket de broadcast si está habilitado
         if self.use_broadcast_fallback:
@@ -205,6 +217,68 @@ class NodeDiscovery:
         self.cleanup_thread.start()
 
         logger.info(f"[Node-{self.node_id}] [DISCOVERY] Service started")
+
+    def _join_multicast_all_interfaces(self):
+        """
+        FASE 9: Une al grupo multicast en todas las interfaces de red.
+
+        Esto es crítico para VMs con múltiples interfaces (bridge + NAT),
+        ya que asegura que los mensajes multicast se reciban en cualquier interfaz.
+        """
+        joined_count = 0
+
+        # Intentar obtener todas las IPs locales
+        try:
+            result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=5)
+            ips = result.stdout.strip().split()
+
+            for ip in ips:
+                if ip and not ip.startswith('127.') and '.' in ip:
+                    try:
+                        mreq = struct.pack("4s4s",
+                            socket.inet_aton(self.multicast_group),
+                            socket.inet_aton(ip)
+                        )
+                        self.recv_socket.setsockopt(
+                            socket.IPPROTO_IP,
+                            socket.IP_ADD_MEMBERSHIP,
+                            mreq
+                        )
+                        joined_count += 1
+                        logger.info(f"[Node-{self.node_id}] [DISCOVERY] Joined multicast on interface {ip}")
+                    except Exception as e:
+                        logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Failed to join multicast on {ip}: {e}")
+
+        except Exception as e:
+            logger.warning(f"[Node-{self.node_id}] [DISCOVERY] Failed to enumerate interfaces: {e}")
+
+        # Si no pudimos unir a ninguna interfaz, usar fallback INADDR_ANY
+        if joined_count == 0:
+            try:
+                mreq = struct.pack("4sl",
+                    socket.inet_aton(self.multicast_group),
+                    socket.INADDR_ANY
+                )
+                self.recv_socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+                logger.info(f"[Node-{self.node_id}] [DISCOVERY] Joined multicast on INADDR_ANY (fallback)")
+            except Exception as e:
+                logger.error(f"[Node-{self.node_id}] [DISCOVERY] Failed to join multicast: {e}")
+
+    def _ip_to_int(self, ip: str) -> int:
+        """
+        FASE 9: Convierte IP a entero para comparación numérica.
+
+        Args:
+            ip: Dirección IP en formato string (ej: "192.168.1.100")
+
+        Returns:
+            int: Representación numérica de la IP
+        """
+        try:
+            parts = ip.split('.')
+            return (int(parts[0]) << 24) + (int(parts[1]) << 16) + (int(parts[2]) << 8) + int(parts[3])
+        except (ValueError, IndexError):
+            return 0
 
     def stop(self):
         """Detiene el servicio de descubrimiento."""
@@ -384,6 +458,9 @@ class NodeDiscovery:
                 self._handle_announce(message, addr)
             elif msg_type == 'LEAVE':
                 self._handle_leave(message)
+            elif msg_type == 'ID_QUERY':
+                # FASE 9: Responder a queries de nuevos nodos
+                self._handle_id_query(addr)
             else:
                 logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Unknown message type: {msg_type}")
 
@@ -392,9 +469,9 @@ class NodeDiscovery:
 
     def _handle_id_collision(self, conflicting_id: int, conflicting_ip: str):
         """
-        Resuelve colisión de IDs automáticamente.
+        FASE 9: Resuelve colisión de IDs usando comparación numérica de IPs.
 
-        Estrategia: El nodo con IP mayor (lexicográficamente) conserva el ID.
+        Estrategia: El nodo con IP mayor (numéricamente) conserva el ID.
         El nodo con IP menor debe regenerar un nuevo ID y reiniciar.
 
         Args:
@@ -402,27 +479,65 @@ class NodeDiscovery:
             conflicting_ip: IP del otro nodo con el mismo ID
         """
         my_ip = self.local_ip
+        my_ip_int = self._ip_to_int(my_ip)
+        their_ip_int = self._ip_to_int(conflicting_ip)
 
-        logger.warning(f"[Node-{self.node_id}] [DISCOVERY] Resolving collision: My IP={my_ip} vs {conflicting_ip}")
+        logger.warning(f"[Node-{self.node_id}] [COLLISION] My IP={my_ip} ({my_ip_int}) vs {conflicting_ip} ({their_ip_int})")
 
-        # Comparar IPs lexicográficamente (funciona para IPs en misma subred)
-        # El nodo con IP mayor conserva el ID
-        if my_ip > conflicting_ip:
-            logger.info(f"[Node-{self.node_id}] [DISCOVERY] My IP is higher - KEEPING ID {conflicting_id}")
+        # Comparar IPs numéricamente (más preciso que lexicográfico)
+        if my_ip_int > their_ip_int:
+            logger.info(f"[Node-{self.node_id}] [COLLISION] My IP is higher - KEEPING ID {conflicting_id}")
             return  # No hacer nada, mantener mi ID
 
+        if my_ip_int == their_ip_int:
+            # Mismo IP detectado - esto no debería pasar
+            # Usar PID como tiebreaker
+            import os
+            logger.warning(f"[Node-{self.node_id}] [COLLISION] Same IP detected! This is a bug in IP detection.")
+            logger.warning(f"[Node-{self.node_id}] [COLLISION] Keeping ID (will retry collision later)")
+            return
+
         # Mi IP es menor, debo regenerar un nuevo ID
-        logger.warning(f"[Node-{self.node_id}] [DISCOVERY] My IP is lower - MUST REGENERATE ID")
+        logger.warning(f"[Node-{self.node_id}] [COLLISION] My IP is lower - MUST REGENERATE ID")
 
         # Notificar al BullyNode para que regenere ID y reinicie
         if self.on_collision_regenerate:
-            logger.info(f"[Node-{self.node_id}] [DISCOVERY] Triggering ID regeneration callback...")
+            logger.info(f"[Node-{self.node_id}] [COLLISION] Triggering ID regeneration callback...")
             threading.Thread(
                 target=self.on_collision_regenerate,
                 daemon=True
             ).start()
         else:
-            logger.error(f"[Node-{self.node_id}] [DISCOVERY] No regeneration callback set! Node will have duplicate ID!")
+            logger.error(f"[Node-{self.node_id}] [COLLISION] No regeneration callback set! Node will have duplicate ID!")
+
+    def _handle_id_query(self, addr: Tuple[str, int]):
+        """
+        FASE 9: Responde a ID_QUERY de nodos que están arrancando.
+
+        Cuando un nuevo nodo hace discovery, envía ID_QUERY para provocar
+        respuestas inmediatas de nodos existentes. Esto asegura que el
+        nuevo nodo detecte todos los IDs en uso.
+
+        Args:
+            addr: Dirección (IP, puerto) del nodo que pregunta
+        """
+        try:
+            # Enviar ID_RESPONSE inmediatamente
+            response = {
+                'type': 'ID_RESPONSE',
+                'node_id': self.node_id,
+                'tcp_port': self.tcp_port,
+                'udp_port': self.udp_port,
+                'timestamp': time.time()
+            }
+            data = json.dumps(response).encode('utf-8')
+
+            # Responder via multicast para que todos los nuevos nodos lo vean
+            self.send_socket.sendto(data, (self.multicast_group, self.multicast_port))
+            logger.info(f"[Node-{self.node_id}] [DISCOVERY] 📤 Sent ID_RESPONSE to query from {addr[0]}")
+
+        except Exception as e:
+            logger.error(f"[Node-{self.node_id}] [DISCOVERY] Error responding to ID_QUERY: {e}")
 
     def _handle_announce(self, message: dict, addr: Tuple[str, int]):
         """Maneja mensaje ANNOUNCE de otro nodo."""

@@ -1,8 +1,13 @@
 """
 Módulo para generación automática de IDs únicos para nodos en el cluster.
 
-Utiliza file locking atómico (fcntl) para garantizar IDs únicos
-incluso cuando múltiples VMs arrancan simultáneamente.
+FASE 9: IDs secuenciales desde 1 con discovery previo.
+
+Estrategia:
+1. Delay desincronizado basado en IP (1-10s, evita arranque simultáneo)
+2. Discovery ACTIVO de 3 segundos (detecta IDs existentes con queries)
+3. Tomar menor ID libre desde 1
+4. Resolución de colisiones por IP como fallback
 """
 import time
 import random
@@ -11,6 +16,8 @@ import json
 import logging
 import fcntl
 import atexit
+import socket
+import struct
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +57,238 @@ def _is_port_available(port: int, host: str = '0.0.0.0') -> bool:
         return False
 
     return True
+
+
+# ============================================================================
+# FASE 9: Funciones para IDs secuenciales con discovery previo
+# ============================================================================
+
+def get_startup_delay() -> float:
+    """
+    Calcula delay inicial basado en último octeto de IP.
+
+    FASE 9 FIX: Delays mínimos pero suficientes para evitar colisiones.
+    El primer nodo debe terminar discovery Y empezar a enviar ANNOUNCE
+    antes de que el segundo termine su discovery.
+
+    Ejemplos:
+        IP .12 → delay ~3s (1 + 2*1)
+        IP .16 → delay ~7s (1 + 6*1)
+        Diferencia de 4s + discovery 3s = VM2 detecta VM1
+
+    Returns:
+        float: Delay en segundos (1.0 a 10.0)
+    """
+    try:
+        # Detectar IP local
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(2.0)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+
+        last_octet = int(ip.split('.')[-1])
+        # Delay rápido: 1s base + (0-9s) basado en último dígito del octeto
+        # Esto crea grupos de 10 IPs con ~1s de separación
+        delay = 1.0 + (last_octet % 10) * 1.0
+        logger.info(f"[ID_GEN] IP={ip}, last_octet={last_octet}, calculated delay={delay:.2f}s")
+        return delay
+    except Exception as e:
+        # Fallback: delay aleatorio
+        delay = random.uniform(1.0, 5.0)
+        logger.warning(f"[ID_GEN] Could not detect IP, using random delay={delay:.2f}s: {e}")
+        return delay
+
+
+def discover_existing_ids(timeout: float = 3.0) -> set:
+    """
+    Descubre IDs de nodos existentes via multicast.
+
+    FASE 9 FIX: Discovery ACTIVO - además de escuchar, envía
+    ID_QUERY periódicamente para provocar respuestas inmediatas
+    de nodos existentes.
+
+    Args:
+        timeout: Segundos a escuchar (default 5.0)
+
+    Returns:
+        set: Conjunto de IDs ya en uso
+    """
+    existing_ids = set()
+    multicast_group = '224.0.0.100'
+    multicast_port = 5005
+
+    try:
+        # Socket para escuchar Y enviar
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except AttributeError:
+            pass
+
+        sock.bind(('', multicast_port))
+        sock.settimeout(0.5)
+
+        # Unirse a grupo multicast
+        try:
+            mreq = struct.pack("4sl", socket.inet_aton(multicast_group), socket.INADDR_ANY)
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        except Exception as e:
+            logger.warning(f"[ID_GEN] Could not join multicast: {e}")
+
+        # Configurar TTL para envío multicast
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
+
+        logger.info(f"[ID_GEN] 🔍 Active discovery for {timeout}s (listening + sending queries)...")
+
+        # Enviar ID_QUERY inicial
+        query_msg = json.dumps({
+            'type': 'ID_QUERY',
+            'timestamp': time.time()
+        }).encode()
+
+        try:
+            sock.sendto(query_msg, (multicast_group, multicast_port))
+            logger.info("[ID_GEN] 📤 Sent ID_QUERY to multicast")
+        except Exception as e:
+            logger.warning(f"[ID_GEN] Failed to send ID_QUERY: {e}")
+
+        start_time = time.time()
+        query_interval = 1.0  # Enviar query cada segundo
+        last_query = start_time
+
+        while time.time() - start_time < timeout:
+            try:
+                data, addr = sock.recvfrom(1024)
+                msg = json.loads(data.decode())
+
+                # Aceptar ANNOUNCE o ID_RESPONSE
+                if msg.get('node_id'):
+                    msg_type = msg.get('type', '')
+                    if msg_type in ('ANNOUNCE', 'ID_RESPONSE', 'HEARTBEAT'):
+                        node_id = msg['node_id']
+                        if node_id not in existing_ids:
+                            existing_ids.add(node_id)
+                            logger.info(f"[ID_GEN] ✓ Found node ID={node_id} at {addr[0]} (via {msg_type})")
+
+            except socket.timeout:
+                # Enviar query periódicamente
+                current_time = time.time()
+                if current_time - last_query >= query_interval:
+                    try:
+                        sock.sendto(query_msg, (multicast_group, multicast_port))
+                        last_query = current_time
+                    except:
+                        pass
+                continue
+            except json.JSONDecodeError:
+                continue
+            except Exception as e:
+                logger.debug(f"[ID_GEN] Discovery recv error: {e}")
+                continue
+
+        sock.close()
+
+    except Exception as e:
+        logger.warning(f"[ID_GEN] Discovery failed: {e}")
+
+    if existing_ids:
+        logger.info(f"[ID_GEN] Discovery complete: found IDs {sorted(existing_ids)}")
+    else:
+        logger.info("[ID_GEN] Discovery complete: no existing nodes found")
+
+    return existing_ids
+
+
+def get_next_available_id(existing_ids: set, start_from: int = 1) -> int:
+    """
+    Obtiene el siguiente ID disponible comenzando desde start_from.
+
+    Args:
+        existing_ids: IDs ya en uso
+        start_from: ID inicial (default 1)
+
+    Returns:
+        int: Menor ID libre >= start_from
+
+    Raises:
+        RuntimeError: Si no hay IDs disponibles
+    """
+    candidate = start_from
+    while candidate in existing_ids:
+        candidate += 1
+        if candidate > 254:  # Límite práctico
+            raise RuntimeError("No hay IDs disponibles (cluster lleno)")
+    return candidate
+
+
+def get_or_create_node_id_v2(persist_file: str = None, force_new: bool = False) -> int:
+    """
+    Genera NODE_ID secuencial (1, 2, 3...) con discovery previo.
+
+    IMPORTANTE: Para clusters dinámicos, SIEMPRE hace discovery primero.
+    NO usa persistencia para evitar conflictos entre VMs.
+
+    Proceso:
+    1. Aplicar delay desincronizado basado en IP
+    2. Escuchar por 3 segundos para descubrir nodos existentes
+    3. Tomar el menor ID libre (empezando desde 1)
+    4. Verificar puertos disponibles
+
+    Args:
+        persist_file: No usado (mantenido para compatibilidad)
+        force_new: No usado (siempre genera nuevo ID con discovery)
+
+    Returns:
+        int: NODE_ID único secuencial desde 1
+
+    Examples:
+        VM1 arranca primero → ID=1
+        VM2 arranca después → ID=2
+        VM3 arranca después → ID=3
+    """
+    # FIX FASE 9: NO usar persistencia en clusters dinámicos
+    # La persistencia causa colisiones cuando múltiples VMs arrancan
+    # porque el check de puertos solo verifica LOCAL, no otros nodos
+
+    # 1. Delay desincronizado basado en IP
+    delay = get_startup_delay()
+    logger.info(f"[ID_GEN] ⏳ Startup delay: {delay:.2f}s (desynchronizing with other VMs)")
+    time.sleep(delay)
+
+    # 2. Discovery de IDs existentes (escuchar 3 segundos)
+    logger.info("[ID_GEN] 🔍 Discovering existing nodes...")
+    existing_ids = discover_existing_ids(timeout=3.0)
+
+    if existing_ids:
+        logger.info(f"[ID_GEN] Found {len(existing_ids)} existing node(s): {sorted(existing_ids)}")
+    else:
+        logger.info("[ID_GEN] No existing nodes found - this will be the first node")
+
+    # 3. Obtener menor ID libre desde 1
+    new_id = get_next_available_id(existing_ids, start_from=1)
+    logger.info(f"[ID_GEN] 🎯 Selected NODE_ID={new_id}")
+
+    # 4. Verificar puertos disponibles
+    tcp_port = 5555 + (new_id % 1000)
+    udp_port = 6000 + (new_id % 1000)
+
+    attempts = 0
+    while not _is_port_available(tcp_port) or not _is_port_available(udp_port):
+        logger.warning(f"[ID_GEN] Ports for ID {new_id} in use (TCP:{tcp_port}, UDP:{udp_port}), trying next...")
+        existing_ids.add(new_id)
+        new_id = get_next_available_id(existing_ids, start_from=new_id + 1)
+        tcp_port = 5555 + (new_id % 1000)
+        udp_port = 6000 + (new_id % 1000)
+        attempts += 1
+        if attempts > 50:
+            raise RuntimeError("Could not find available ports after 50 attempts")
+
+    logger.info(f"[ID_GEN] ✅ Final NODE_ID={new_id} (TCP:{tcp_port}, UDP:{udp_port})")
+
+    # NO persistir - cada arranque hace discovery fresco para evitar colisiones
+    return new_id
 
 
 def _release_all_locks():
@@ -283,8 +522,10 @@ def load_node_id(persist_file: str = None, use_process_unique: bool = True) -> i
         return None
 
 
-def get_or_create_node_id(persist_file: str = None, force_new: bool = False, use_process_unique: bool = True) -> int:
+def get_or_create_node_id_DEPRECATED_DO_NOT_USE(persist_file: str = None, force_new: bool = False, use_process_unique: bool = True) -> int:
     """
+    DEPRECATED: Use get_or_create_node_id_v2() instead.
+
     Obtiene el node ID persistido o genera uno nuevo secuencial si no existe.
 
     Este es el método principal que deberían usar las aplicaciones.

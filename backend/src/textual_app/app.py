@@ -37,7 +37,10 @@ class MedicalApp(App):
     BINDINGS = [
         Binding("ctrl+c", "quit", "Salir", priority=True),
         Binding("ctrl+d", "toggle_dark", "Tema", show=False),
-        Binding("f1", "help", "Ayuda", show=False),
+        Binding("f1", "help", "Ayuda", show=True),
+        # Navegación con flechas (sin mouse)
+        Binding("down", "focus_next", "↓", show=True),
+        Binding("up", "focus_previous", "↑", show=True),
     ]
     
     def __init__(

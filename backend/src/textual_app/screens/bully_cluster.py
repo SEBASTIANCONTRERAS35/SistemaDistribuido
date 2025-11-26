@@ -104,6 +104,11 @@ class BullyClusterScreen(Screen):
     BINDINGS = [
         Binding("ctrl+r", "refresh", "Actualizar", show=True),
         Binding("escape", "app.pop_screen", "Volver", show=True),
+        # Navegación con flechas (sin mouse)
+        Binding("down", "focus_next", "↓", show=False),
+        Binding("up", "focus_previous", "↑", show=False),
+        Binding("left", "focus_previous", "←", show=False),
+        Binding("right", "focus_next", "→", show=False),
     ]
 
     CSS = """

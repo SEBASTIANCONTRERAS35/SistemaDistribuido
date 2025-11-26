@@ -126,10 +126,11 @@ class Config:
         """
         if cls.NODE_ID is None:
             # Importar aquí para evitar circular imports
-            from bully.id_generator import get_or_create_node_id
+            # FIX FASE 9: Usar función v2 con discovery (no la vieja con file locking)
+            from bully.id_generator import get_or_create_node_id_v2
 
-            # Generar o recuperar ID persistido
-            generated_id = get_or_create_node_id()
+            # Generar ID con discovery de nodos existentes
+            generated_id = get_or_create_node_id_v2()
 
             # Asignar al config
             cls.NODE_ID = generated_id

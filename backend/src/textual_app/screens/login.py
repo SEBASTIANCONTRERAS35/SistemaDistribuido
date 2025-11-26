@@ -5,8 +5,9 @@ Login Screen - User authentication with real database validation
 import asyncio
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import Static, Input, Button, Label
+from textual.widgets import Static, Input, Button, Label, Footer
 from textual.containers import Container, Vertical, Horizontal, Center
+from textual.binding import Binding
 from textual import work
 from rich.text import Text
 from rich.panel import Panel
@@ -17,7 +18,16 @@ class LoginScreen(Screen):
     Login screen for user authentication with real database validation
     Validates credentials against Usuario table with bcrypt password hashing
     """
-    
+
+    # Navegación con flechas y Enter
+    BINDINGS = [
+        Binding("down", "focus_next", "↓ Siguiente", show=False),
+        Binding("up", "focus_previous", "↑ Anterior", show=False),
+        Binding("enter", "submit_login", "Ingresar", show=False),
+        Binding("left", "focus_previous", "←", show=False),
+        Binding("right", "focus_next", "→", show=False),
+    ]
+
     CSS = """
     LoginScreen {
         align: center middle;
@@ -110,7 +120,24 @@ class LoginScreen(Screen):
                 
                 node_info = f"Nodo {node_id} | {state.upper()} | {cluster_size} nodo(s) activo(s)"
                 yield Label(node_info, id="node-info")
-    
+
+                # Instrucciones de navegación
+                yield Label(
+                    "[dim]↑↓: Navegar | Enter: Ingresar | Ctrl+C: Salir[/dim]",
+                    id="nav-hints"
+                )
+
+            # Footer para mostrar atajos
+            yield Footer()
+
+    def on_mount(self) -> None:
+        """Auto-focus username input when screen loads"""
+        self.query_one("#username-input", Input).focus()
+
+    def action_submit_login(self) -> None:
+        """Enter key submits login from anywhere"""
+        self.attempt_login()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses"""
         if event.button.id == "login-button":

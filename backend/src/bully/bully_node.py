@@ -635,17 +635,17 @@ class BullyNode:
             self.stop()
 
             # 2. Liberar lock del NODE_ID actual
-            from bully.id_generator import release_node_id_lock, clear_persistent_id, get_or_create_node_id
+            from bully.id_generator import release_node_id_lock, clear_persistent_id, get_or_create_node_id_v2
             release_node_id_lock(old_id)
             clear_persistent_id()
 
-            # 3. Generar nuevo NODE_ID
-            logger.info(f"[Node-{old_id}] [COLLISION] Generating new NODE_ID...")
-            new_id = get_or_create_node_id(force_new=True)
+            # 3. Generar nuevo NODE_ID usando función con discovery
+            logger.info(f"[Node-{old_id}] [COLLISION] Generating new NODE_ID with discovery...")
+            new_id = get_or_create_node_id_v2(force_new=True)
 
             if new_id == old_id:
                 # Si obtuvimos el mismo ID, forzar uno diferente
-                new_id = get_or_create_node_id(force_new=True)
+                new_id = get_or_create_node_id_v2(force_new=True)
 
             logger.info(f"[COLLISION] New NODE_ID generated: {new_id} (was {old_id})")
 
