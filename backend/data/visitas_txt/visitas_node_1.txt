@@ -1,0 +1,29 @@
+======================================================================
+VISITA DE EMERGENCIA - 2025-11-26 17:17:54
+======================================================================
+Folio: 3+4+2+001
+ID Visita: 3
+Estado: ACTIVA
+
+--- PACIENTE ---
+ID: 3
+Nombre: emilio
+Edad: 43 años
+Sexo: M
+CURP: dfdsfdsfdsf
+
+--- ASIGNACIÓN ---
+Sala: 2
+Doctor: Dr. Ricardo Mendiola S2 (Medicina General)
+Cama: #201
+
+--- CLÍNICO ---
+Síntomas: dffdsfdsfdsfdsfdsfdsfdsfdsfdsfdsfds
+Diagnóstico: (pendiente)
+
+--- METADATA ---
+Nodo creador: 1
+Usuario: social1
+Timestamp: 2025-11-26 23:17:54.241696
+
+

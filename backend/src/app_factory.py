@@ -5,7 +5,7 @@ Mantiene Flask-SQLAlchemy pero no inicia routes ni SocketIO.
 from flask import Flask
 from config import Config
 from models import db
-from auth import init_default_users
+from auth import init_default_users, init_all_salas_resources
 import logging
 import os
 
@@ -33,9 +33,10 @@ def create_app():
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    # Crear tablas y usuarios por defecto
+    # Crear tablas, usuarios y recursos por defecto
     with app.app_context():
         db.create_all()
-        init_default_users()  # Función existente de auth.py
+        init_default_users()  # Usuarios de prueba (doctor1, trabajador1, etc.)
+        init_all_salas_resources()  # 4 salas con 3 doctores y 10 camas cada una
 
     return app

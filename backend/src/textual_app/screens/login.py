@@ -181,16 +181,31 @@ class LoginScreen(Screen):
             # Small delay to show success message
             await asyncio.sleep(0.5)
 
-            # Navigate to main Visitas screen
-            from .visitas import VisitasScreen
-            self.app.push_screen(
-                VisitasScreen(
-                    self.flask_app,
-                    self.bully_manager,
-                    username,
-                    user_info=user_info
+            # Navigate based on user role
+            rol = user_info.get('rol', '')
+
+            if rol == 'trabajador_social':
+                # Trabajador social -> Dashboard with all features
+                from .trabajador_dashboard import TrabajadorDashboard
+                self.app.push_screen(
+                    TrabajadorDashboard(
+                        self.flask_app,
+                        self.bully_manager,
+                        username,
+                        user_info=user_info
+                    )
                 )
-            )
+            else:
+                # Doctor -> Direct to Visitas screen
+                from .visitas import VisitasScreen
+                self.app.push_screen(
+                    VisitasScreen(
+                        self.flask_app,
+                        self.bully_manager,
+                        username,
+                        user_info=user_info
+                    )
+                )
         else:
             status.update(f"[red]❌ {result['error']}[/red]")
             # Clear password field on error

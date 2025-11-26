@@ -91,6 +91,46 @@ class SimpleCreateVisitScreen(ModalScreen):
         self.username = username
         self.user_info = user_info or {}
 
+    def _save_visit_to_txt(self, visita, paciente, doctor, cama, sala_id, node_id):
+        """Guarda la visita en archivo TXT para desarrollo"""
+        import os
+        from datetime import datetime
+
+        # Crear directorio si no existe
+        txt_dir = os.path.join(os.path.dirname(__file__), '../../..', 'data', 'visitas_txt')
+        os.makedirs(txt_dir, exist_ok=True)
+
+        # Archivo con timestamp
+        filename = f"visitas_node_{node_id}.txt"
+        filepath = os.path.join(txt_dir, filename)
+
+        # Formatear información
+        with open(filepath, 'a', encoding='utf-8') as f:
+            f.write("=" * 70 + "\n")
+            f.write(f"VISITA DE EMERGENCIA - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 70 + "\n")
+            f.write(f"Folio: {visita.folio}\n")
+            f.write(f"ID Visita: {visita.id_visita}\n")
+            f.write(f"Estado: {visita.estado.upper()}\n")
+            f.write(f"\n--- PACIENTE ---\n")
+            f.write(f"ID: {paciente.id_paciente}\n")
+            f.write(f"Nombre: {paciente.nombre}\n")
+            f.write(f"Edad: {paciente.edad} años\n")
+            f.write(f"Sexo: {paciente.sexo}\n")
+            f.write(f"CURP: {paciente.curp or 'N/A'}\n")
+            f.write(f"\n--- ASIGNACIÓN ---\n")
+            f.write(f"Sala: {sala_id}\n")
+            f.write(f"Doctor: {doctor.nombre} ({doctor.especialidad})\n")
+            f.write(f"Cama: #{cama.numero}\n")
+            f.write(f"\n--- CLÍNICO ---\n")
+            f.write(f"Síntomas: {visita.sintomas}\n")
+            f.write(f"Diagnóstico: {visita.diagnostico or '(pendiente)'}\n")
+            f.write(f"\n--- METADATA ---\n")
+            f.write(f"Nodo creador: {node_id}\n")
+            f.write(f"Usuario: {self.username}\n")
+            f.write(f"Timestamp: {visita.timestamp}\n")
+            f.write("\n\n")
+
     def compose(self) -> ComposeResult:
         """Compose the create visit form"""
         with Container(id="visit-container"):
@@ -233,7 +273,8 @@ class SimpleCreateVisitScreen(ModalScreen):
         with self.flask_app.app_context():
             from models import (
                 db, VisitaEmergencia, Paciente, Doctor, Cama,
-                get_doctores_disponibles, get_camas_disponibles
+                get_doctores_disponibles, get_camas_disponibles,
+                elegir_sala_menos_carga
             )
             from bully.distributed_locks import (
                 solicitar_bloqueo_distribuido,
@@ -249,10 +290,27 @@ class SimpleCreateVisitScreen(ModalScreen):
             cama_locked = False
 
             try:
-                # 1. Get available resources
-                logger.info(f"[VISIT] Getting available resources for sala {self.bully_manager.node_id}")
-                doctores = get_doctores_disponibles(id_sala=self.bully_manager.node_id)
-                camas = get_camas_disponibles(id_sala=self.bully_manager.node_id)
+                node_id = self.bully_manager.node_id
+                logger.warning(f"")
+                logger.warning(f"╔══════════════════════════════════════════════════════════════╗")
+                logger.warning(f"║  [Node-{node_id}] INICIANDO CREACION DE VISITA                     ║")
+                logger.warning(f"║  Paciente: {nombre[:30]:<30}                    ║")
+                logger.warning(f"╚══════════════════════════════════════════════════════════════╝")
+
+                # 1. MAESTRO evalúa carga de TODAS las salas y elige la mejor
+                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 1: MAESTRO evaluando carga de todas las salas...")
+                sala_destino = elegir_sala_menos_carga()
+
+                if not sala_destino:
+                    logger.error(f"[Node-{node_id}] [VISIT-CREATE] No hay salas con recursos disponibles")
+                    return {'success': False, 'error': 'No hay salas con recursos disponibles'}
+
+                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] MAESTRO decidió: Asignar a SALA {sala_destino}")
+
+                # 2. Buscar recursos en la sala elegida
+                doctores = get_doctores_disponibles(id_sala=sala_destino)
+                camas = get_camas_disponibles(id_sala=sala_destino)
+                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Sala {sala_destino}: {len(doctores)} doctores, {len(camas)} camas disponibles")
 
                 if not doctores:
                     return {'success': False, 'error': 'No hay doctores disponibles'}
@@ -260,9 +318,10 @@ class SimpleCreateVisitScreen(ModalScreen):
                 if not camas:
                     return {'success': False, 'error': 'No hay camas disponibles'}
 
-                # 2. Try to lock a doctor (distributed mutual exclusion)
-                logger.info(f"[VISIT] Attempting to lock doctor from {len(doctores)} available")
+                # 3. Try to lock a doctor (distributed mutual exclusion)
+                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 3: EXCLUSION MUTUA - Bloqueando doctor...")
                 for d in doctores:
+                    logger.warning(f"[Node-{node_id}] [LOCK-REQUEST] Intentando bloquear DOCTOR_{d.id_doctor} ({d.nombre})")
                     if solicitar_bloqueo_distribuido(
                         self.bully_manager,
                         self.flask_app,
@@ -271,17 +330,18 @@ class SimpleCreateVisitScreen(ModalScreen):
                     ):
                         doctor = d
                         doctor_locked = True
-                        logger.info(f"[VISIT] Doctor {d.id_doctor} locked successfully")
+                        logger.warning(f"[Node-{node_id}] [LOCK-SUCCESS] ✓ DOCTOR_{d.id_doctor} BLOQUEADO")
                         break
                     else:
-                        logger.warning(f"[VISIT] Could not lock doctor {d.id_doctor}")
+                        logger.warning(f"[Node-{node_id}] [LOCK-FAIL] ✗ No se pudo bloquear DOCTOR_{d.id_doctor}")
 
                 if not doctor:
                     return {'success': False, 'error': 'No se pudo reservar ningun doctor (recursos ocupados)'}
 
-                # 3. Try to lock a cama (distributed mutual exclusion)
-                logger.info(f"[VISIT] Attempting to lock cama from {len(camas)} available")
+                # 4. Try to lock a cama (distributed mutual exclusion)
+                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 4: EXCLUSION MUTUA - Bloqueando cama...")
                 for c in camas:
+                    logger.warning(f"[Node-{node_id}] [LOCK-REQUEST] Intentando bloquear CAMA_{c.id_cama} (#{c.numero})")
                     if solicitar_bloqueo_distribuido(
                         self.bully_manager,
                         self.flask_app,
@@ -290,17 +350,18 @@ class SimpleCreateVisitScreen(ModalScreen):
                     ):
                         cama = c
                         cama_locked = True
-                        logger.info(f"[VISIT] Cama {c.id_cama} locked successfully")
+                        logger.warning(f"[Node-{node_id}] [LOCK-SUCCESS] ✓ CAMA_{c.id_cama} BLOQUEADA")
                         break
                     else:
-                        logger.warning(f"[VISIT] Could not lock cama {c.id_cama}")
+                        logger.warning(f"[Node-{node_id}] [LOCK-FAIL] ✗ No se pudo bloquear CAMA_{c.id_cama}")
 
                 if not cama:
                     # Release doctor lock since we couldn't get a cama
                     liberar_bloqueo_distribuido(self.bully_manager, 'DOCTOR', doctor.id_doctor)
                     return {'success': False, 'error': 'No se pudo reservar ninguna cama (recursos ocupados)'}
 
-                # 4. Create or find patient
+                # 5. Create or find patient
+                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 5: Registrando paciente...")
                 paciente = None
                 if curp:
                     paciente = Paciente.query.filter_by(curp=curp).first()
@@ -314,20 +375,25 @@ class SimpleCreateVisitScreen(ModalScreen):
                         activo=1
                     )
                     db.session.add(paciente)
-                    db.session.flush()
+                    db.session.flush()  # Flush para obtener ID (ahora seguro porque get_next_consecutivo no hace flush)
+                    logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Nuevo paciente creado: ID={paciente.id_paciente}")
+                else:
+                    logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paciente existente: ID={paciente.id_paciente}")
 
-                # 5. Mark resources as occupied in local DB
+                # 6. Mark resources as occupied in local DB
+                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 6: Marcando recursos como ocupados...")
                 doctor.disponible = False
                 cama.ocupada = True
                 cama.id_paciente = paciente.id_paciente
 
-                # 6. Create visit
+                # 7. Create visit
+                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 7: Creando visita en BD local (Sala {sala_destino})...")
                 visita = VisitaEmergencia(
                     id_paciente=paciente.id_paciente,
                     id_doctor=doctor.id_doctor,
                     id_cama=cama.id_cama,
                     id_trabajador=1,  # TODO: Get from session
-                    id_sala=self.bully_manager.node_id,
+                    id_sala=sala_destino,  # Sala elegida por balanceo de carga
                     sintomas=sintomas,
                     estado='activa',
                     timestamp=datetime.utcnow()
@@ -337,10 +403,13 @@ class SimpleCreateVisitScreen(ModalScreen):
                 db.session.commit()
                 db.session.refresh(visita)
 
-                logger.info(f"[VISIT] Visit created locally: folio={visita.folio}")
+                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] ✓ Visita creada localmente: FOLIO={visita.folio}")
 
-                # 7. Replicate resource assignment to other nodes (consensus)
-                logger.info(f"[VISIT] Replicating resource assignment to cluster...")
+                # 7.5. Guardar en archivo TXT (solo desarrollo)
+                self._save_visit_to_txt(visita, paciente, doctor, cama, sala_destino, node_id)
+
+                # 8. Replicate resource assignment to other nodes (consensus)
+                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 8: CONSENSO - Replicando a otros nodos...")
                 replicar_asignacion_con_consenso(
                     self.bully_manager,
                     self.flask_app,
@@ -349,18 +418,27 @@ class SimpleCreateVisitScreen(ModalScreen):
                     paciente.id_paciente
                 )
 
-                # 8. Release distributed locks (resources are now marked as occupied in DB)
+                # 9. Release distributed locks (resources are now marked as occupied in DB)
+                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 9: Liberando bloqueos distribuidos...")
                 liberar_bloqueo_distribuido(self.bully_manager, 'DOCTOR', doctor.id_doctor)
                 liberar_bloqueo_distribuido(self.bully_manager, 'CAMA', cama.id_cama)
 
-                logger.info(f"[VISIT] Visit creation complete: {visita.folio}")
+                logger.warning(f"")
+                logger.warning(f"╔══════════════════════════════════════════════════════════════╗")
+                logger.warning(f"║  [Node-{node_id}] VISITA CREADA EXITOSAMENTE                       ║")
+                logger.warning(f"║  Folio: {visita.folio:<20}                              ║")
+                logger.warning(f"║  Sala: {sala_destino:<3} (balanceada)                                    ║")
+                logger.warning(f"║  Doctor: {doctor.nombre[:20]:<20}                             ║")
+                logger.warning(f"║  Cama: #{cama.numero:<5}                                            ║")
+                logger.warning(f"╚══════════════════════════════════════════════════════════════╝")
 
                 return {
                     'success': True,
                     'folio': visita.folio,
                     'id_visita': visita.id_visita,
                     'doctor': doctor.nombre,
-                    'cama': cama.numero
+                    'cama': cama.numero,
+                    'sala': sala_destino
                 }
 
             except Exception as e:

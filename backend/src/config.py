@@ -24,12 +24,11 @@ class Config:
     # Crear directorio de datos si no existe
     os.makedirs(_DATA_DIR, exist_ok=True)
 
-    # DATABASE_URI se configurará después de tener NODE_ID
-    # Por ahora usar valor temporal
-    _db_suffix = NODE_ID if NODE_ID is not None else "temp"
+    # DATABASE_URI - BD única compartida (replicada en cada nodo)
+    # Todos los nodos usan el mismo nombre de archivo para tener datos idénticos
     SQLALCHEMY_DATABASE_URI = os.getenv(
         'DATABASE_URI',
-        f'sqlite:///{os.path.join(_DATA_DIR, f"emergency_sala{_db_suffix}.db")}'
+        f'sqlite:///{os.path.join(_DATA_DIR, "emergencias.db")}'
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
@@ -146,9 +145,7 @@ class Config:
         if cls.UDP_PORT == 0:
             cls.UDP_PORT = 6000 + cls.NODE_ID % 1000
 
-        # Actualizar DATABASE_URI con el NODE_ID real
-        if "temp.db" in cls.SQLALCHEMY_DATABASE_URI:
-            cls.SQLALCHEMY_DATABASE_URI = f'sqlite:///{os.path.join(cls._DATA_DIR, f"emergency_sala{cls.NODE_ID}.db")}'
+        # BD usa nombre fijo "emergencias.db" - no se actualiza con NODE_ID
 
         return cls.NODE_ID
 

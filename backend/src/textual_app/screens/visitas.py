@@ -134,13 +134,11 @@ class VisitasScreen(Screen):
     def compose(self) -> ComposeResult:
         """Compose the visitas screen UI"""
 
-        # Título personalizado según rol
+        # Título personalizado según rol (solo doctor y trabajador_social)
         rol = self.user_info.get('rol', '')
-        if rol == 'paciente':
-            title = "📋 MIS VISITAS DE EMERGENCIA"
-        elif rol == 'doctor':
-            title = "📋 VISITAS DE EMERGENCIA (Vista Doctor)"
-        else:
+        if rol == 'doctor':
+            title = "📋 VISITAS DE EMERGENCIA"
+        else:  # trabajador_social
             title = "📋 GESTIÓN DE VISITAS DE EMERGENCIA"
 
         # Header with stats
@@ -225,25 +223,20 @@ class VisitasScreen(Screen):
             self.is_loading = False
 
     def _fetch_visitas_from_db(self) -> List[Dict[str, Any]]:
-        """Fetch visits from database filtered by user role (runs in thread pool)"""
+        """Fetch visits from database (runs in thread pool)"""
         with self.flask_app.app_context():
             from models import VisitaEmergencia
+            from sqlalchemy.orm import joinedload
 
-            rol = self.user_info.get('rol', '')
+            # Eager load todas las relaciones necesarias para to_dict()
+            visitas = VisitaEmergencia.query.options(
+                joinedload(VisitaEmergencia.paciente),
+                joinedload(VisitaEmergencia.doctor),
+                joinedload(VisitaEmergencia.cama),
+                joinedload(VisitaEmergencia.sala),
+                joinedload(VisitaEmergencia.trabajador_social)
+            ).order_by(VisitaEmergencia.timestamp.desc()).all()
 
-            if rol == 'paciente':
-                # Paciente: solo ver visitas donde él es el paciente
-                id_paciente = self.user_info.get('id_relacionado')
-                visitas = VisitaEmergencia.query.filter_by(
-                    id_paciente=id_paciente
-                ).order_by(VisitaEmergencia.timestamp.desc()).all()
-            else:
-                # Doctor y Trabajador Social: ver todas las visitas
-                visitas = VisitaEmergencia.query.order_by(
-                    VisitaEmergencia.timestamp.desc()
-                ).all()
-
-            # Convert to dict format
             return [v.to_dict() for v in visitas]
 
     def watch_visitas_data(self, visitas: List[Dict[str, Any]]) -> None:
@@ -351,15 +344,23 @@ class VisitasScreen(Screen):
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Handle row selection - show detail modal"""
+        import logging
+        logger = logging.getLogger(__name__)
+
         if event.row_key:
             # Find the visita by id
             visita_id = event.row_key.value
+            logger.warning(f"[DETALLE] Buscando visita con id: {visita_id}")
+
             visita = next(
                 (v for v in self.filtered_visitas if v.get('id_visita') == visita_id),
                 None
             )
 
             if visita:
+                logger.warning(f"[DETALLE] Visita encontrada: {visita.get('folio')}")
+                logger.warning(f"[DETALLE] Datos completos: paciente={visita.get('paciente')}, doctor={visita.get('doctor')}, sala={visita.get('sala')}, cama={visita.get('cama')}")
+
                 # Import here to avoid circular dependency
                 from .visita_detail import VisitDetailModal
                 self.app.push_screen(
@@ -371,6 +372,8 @@ class VisitasScreen(Screen):
                         user_info=self.user_info
                     )
                 )
+            else:
+                logger.error(f"[DETALLE] No se encontró visita con id {visita_id}")
 
     def action_refresh(self) -> None:
         """Refresh visitas data"""
@@ -390,7 +393,7 @@ class VisitasScreen(Screen):
             """Handle visit creation result"""
             if result and result.get('success'):
                 self.notify(
-                    f"✓ Visita {result['folio']} creada\nDoctor: {result['doctor']}\nCama: {result['cama']}",
+                    f"✓ Visita {result['folio']} creada\nSala: {result.get('sala', '?')}\nDoctor: {result['doctor']}\nCama: {result['cama']}",
                     title="Visita Creada",
                     severity="information",
                     timeout=5

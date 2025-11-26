@@ -66,8 +66,9 @@ class VisitDetailModal(ModalScreen):
     }
 
     .field-value {
-        color: $text-primary;
+        color: $text;
         text-style: bold;
+        min-width: 20;
     }
 
     .field-row {
@@ -100,8 +101,8 @@ class VisitDetailModal(ModalScreen):
     }
 
     .estado-completada {
-        background: $text-muted;
-        color: $surface;
+        background: $panel;
+        color: $text;
     }
 
     .estado-cancelada {
@@ -119,24 +120,75 @@ class VisitDetailModal(ModalScreen):
         self.username = username
         self.user_info = user_info or {}
 
+        # DEBUG: Log visita data
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"[DETALLE-MODAL] Inicializando modal con visita: {visita.get('folio')}")
+        logger.warning(f"[DETALLE-MODAL] Keys en visita dict: {list(visita.keys())}")
+        logger.warning(f"[DETALLE-MODAL] paciente={repr(visita.get('paciente'))}")
+        logger.warning(f"[DETALLE-MODAL] doctor={repr(visita.get('doctor'))}")
+        logger.warning(f"[DETALLE-MODAL] sala={repr(visita.get('sala'))}")
+        logger.warning(f"[DETALLE-MODAL] cama={repr(visita.get('cama'))}")
+
     def _puede_cerrar_visita(self) -> bool:
-        """Determina si el usuario actual puede cerrar esta visita"""
+        """Determina si el usuario actual puede cerrar esta visita.
+        Segun requisitos: SOLO DOCTORES pueden cerrar visitas, y solo las suyas.
+        """
         rol = self.user_info.get('rol', '')
 
-        # Trabajador social puede cerrar cualquier visita
-        if rol == 'trabajador_social':
-            return True
-
-        # Doctor solo puede cerrar visitas donde él es el doctor asignado
+        # Solo doctores pueden cerrar visitas
         if rol == 'doctor':
+            # Solo puede cerrar si él es el doctor asignado
             id_relacionado = self.user_info.get('id_relacionado')
             return self.visita.get('id_doctor') == id_relacionado
 
-        # Paciente no puede cerrar visitas
+        # Trabajador social NO puede cerrar visitas
         return False
+
+    def _save_close_to_txt(self, visita, doctor, cama):
+        """Guarda el cierre de visita en archivo TXT para desarrollo"""
+        import os
+        from datetime import datetime
+        from config import Config
+
+        # Crear directorio si no existe
+        txt_dir = os.path.join(os.path.dirname(__file__), '../../..', 'data', 'visitas_txt')
+        os.makedirs(txt_dir, exist_ok=True)
+
+        # Archivo del nodo actual
+        node_id = Config.NODE_ID or 1
+        filename = f"visitas_node_{node_id}.txt"
+        filepath = os.path.join(txt_dir, filename)
+
+        # Formatear información
+        with open(filepath, 'a', encoding='utf-8') as f:
+            f.write("=" * 70 + "\n")
+            f.write(f"VISITA CERRADA - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 70 + "\n")
+            f.write(f"Folio: {visita.folio}\n")
+            f.write(f"Estado: COMPLETADA\n")
+            f.write(f"Fecha cierre: {visita.fecha_cierre}\n")
+            f.write(f"\n--- RECURSOS LIBERADOS ---\n")
+            f.write(f"Doctor: {doctor.nombre if doctor else 'N/A'} - DISPONIBLE\n")
+            f.write(f"Cama: #{cama.numero if cama else 'N/A'} - LIBRE\n")
+            f.write(f"\n--- USUARIO ---\n")
+            f.write(f"Cerrado por: {self.username}\n")
+            f.write(f"Nodo: {node_id}\n")
+            f.write("\n\n")
 
     def compose(self) -> ComposeResult:
         """Compose the detail modal UI"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Extraer valores para logging
+        paciente_nombre = self.visita.get('paciente', 'N/A')
+        doctor_nombre = self.visita.get('doctor', 'N/A')
+        sala_num = str(self.visita.get('sala', 'N/A'))
+        cama_num = str(self.visita.get('cama', 'N/A'))
+
+        logger.warning(f"[COMPOSE] Creando Labels con: paciente='{paciente_nombre}', doctor='{doctor_nombre}', sala='{sala_num}', cama='{cama_num}'")
+
         with Container(id="detail-container"):
             # Title
             yield Label(
@@ -150,7 +202,7 @@ class VisitDetailModal(ModalScreen):
 
                 with Horizontal(classes="field-row"):
                     yield Label("Nombre:", classes="field-label")
-                    yield Label(self.visita.get('paciente', 'N/A'), classes="field-value")
+                    yield Static(paciente_nombre, classes="field-value")
 
             # Medical staff section
             with Vertical(classes="detail-section"):
@@ -158,7 +210,7 @@ class VisitDetailModal(ModalScreen):
 
                 with Horizontal(classes="field-row"):
                     yield Label("Doctor asignado:", classes="field-label")
-                    yield Label(self.visita.get('doctor', 'N/A'), classes="field-value")
+                    yield Static(doctor_nombre, classes="field-value")
 
             # Location section
             with Vertical(classes="detail-section"):
@@ -166,11 +218,11 @@ class VisitDetailModal(ModalScreen):
 
                 with Horizontal(classes="field-row"):
                     yield Label("Sala:", classes="field-label")
-                    yield Label(str(self.visita.get('sala', 'N/A')), classes="field-value")
+                    yield Static(sala_num, classes="field-value")
 
                 with Horizontal(classes="field-row"):
                     yield Label("Cama:", classes="field-label")
-                    yield Label(str(self.visita.get('cama', 'N/A')), classes="field-value")
+                    yield Static(cama_num, classes="field-value")
 
             # Clinical info section
             with Vertical(classes="detail-section"):
@@ -197,7 +249,7 @@ class VisitDetailModal(ModalScreen):
 
                 with Horizontal(classes="field-row"):
                     yield Label("Fecha de ingreso:", classes="field-label")
-                    yield Label(timestamp_formatted, classes="field-value")
+                    yield Static(timestamp_formatted, classes="field-value")
 
                 # Fecha cierre (if exists)
                 fecha_cierre = self.visita.get('fecha_cierre', '')
@@ -210,7 +262,19 @@ class VisitDetailModal(ModalScreen):
 
                     with Horizontal(classes="field-row"):
                         yield Label("Fecha de cierre:", classes="field-label")
-                        yield Label(cierre_formatted, classes="field-value")
+                        yield Static(cierre_formatted, classes="field-value")
+
+                # Sintomas
+                with Horizontal(classes="field-row"):
+                    yield Label("Síntomas:", classes="field-label")
+                    yield Static(self.visita.get('sintomas', 'N/A'), classes="field-value")
+
+                # Diagnostico (si existe)
+                diagnostico = self.visita.get('diagnostico')
+                if diagnostico:
+                    with Horizontal(classes="field-row"):
+                        yield Label("Diagnóstico:", classes="field-label")
+                        yield Static(diagnostico, classes="field-value")
 
             # Buttons
             with Horizontal(id="button-container"):
@@ -368,6 +432,9 @@ class VisitDetailModal(ModalScreen):
 
                 db.session.commit()
                 logger.info(f"[VISIT-CLOSE] Visit {folio} closed locally")
+
+                # 5.5. Guardar cierre en archivo TXT (solo desarrollo)
+                self._save_close_to_txt(visita, doctor, cama)
 
                 # 6. Replicate resource release to other nodes (consensus)
                 logger.info(f"[VISIT-CLOSE] Replicating resource release to cluster...")

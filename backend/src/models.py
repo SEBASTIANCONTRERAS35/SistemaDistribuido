@@ -43,6 +43,19 @@ class Paciente(db.Model):
     def __repr__(self):
         return f'<Paciente {self.nombre}>'
 
+    def to_dict(self):
+        """Convierte el paciente a diccionario para JSON"""
+        return {
+            'id_paciente': self.id_paciente,
+            'nombre': self.nombre,
+            'edad': self.edad,
+            'sexo': self.sexo,
+            'curp': self.curp,
+            'telefono': self.telefono,
+            'contacto_emergencia': self.contacto_emergencia,
+            'activo': self.activo
+        }
+
 
 class Doctor(db.Model):
     __tablename__ = 'DOCTORES'
@@ -60,6 +73,17 @@ class Doctor(db.Model):
     def __repr__(self):
         return f'<Doctor {self.nombre} - {self.especialidad}>'
 
+    def to_dict(self):
+        """Convierte el doctor a diccionario para JSON"""
+        return {
+            'id_doctor': self.id_doctor,
+            'nombre': self.nombre,
+            'especialidad': self.especialidad,
+            'id_sala': self.id_sala,
+            'disponible': self.disponible,
+            'activo': self.activo
+        }
+
 
 class TrabajadorSocial(db.Model):
     __tablename__ = 'TRABAJADORES_SOCIALES'
@@ -74,6 +98,15 @@ class TrabajadorSocial(db.Model):
 
     def __repr__(self):
         return f'<TrabajadorSocial {self.nombre}>'
+
+    def to_dict(self):
+        """Convierte el trabajador social a diccionario para JSON"""
+        return {
+            'id_trabajador': self.id_trabajador,
+            'nombre': self.nombre,
+            'id_sala': self.id_sala,
+            'activo': self.activo
+        }
 
 
 class Cama(db.Model):
@@ -91,6 +124,16 @@ class Cama(db.Model):
 
     def __repr__(self):
         return f'<Cama {self.numero} - Sala {self.id_sala}>'
+
+    def to_dict(self):
+        """Convierte la cama a diccionario para JSON"""
+        return {
+            'id_cama': self.id_cama,
+            'numero': self.numero,
+            'id_sala': self.id_sala,
+            'ocupada': self.ocupada,
+            'id_paciente': self.id_paciente
+        }
 
 
 class VisitaEmergencia(db.Model):
@@ -117,11 +160,16 @@ class VisitaEmergencia(db.Model):
         return {
             'id_visita': self.id_visita,
             'folio': self.folio,
-            'paciente': self.paciente.nombre,
-            'doctor': self.doctor.nombre,
-            'cama': self.cama.numero,
-            'sala': self.sala.numero,
+            'id_paciente': self.id_paciente,
+            'paciente': self.paciente.nombre if self.paciente else 'N/A',
+            'id_doctor': self.id_doctor,
+            'doctor': self.doctor.nombre if self.doctor else 'N/A',
+            'id_cama': self.id_cama,
+            'cama': self.cama.numero if self.cama else 'N/A',
+            'id_sala': self.id_sala,
+            'sala': self.sala.numero if self.sala else 'N/A',
             'sintomas': self.sintomas,
+            'diagnostico': self.diagnostico,
             'estado': self.estado,
             'timestamp': self.timestamp.isoformat() if self.timestamp else None,
             'fecha_cierre': self.fecha_cierre.isoformat() if self.fecha_cierre else None
@@ -143,6 +191,9 @@ class Consecutivo(db.Model):
 def get_next_consecutivo(id_sala):
     """
     Obtiene el siguiente consecutivo para una sala.
+
+    IMPORTANTE: Esta función NO hace flush/commit porque puede ser llamada
+    desde un evento before_insert donde la sesión ya está flushing.
 
     Args:
         id_sala: ID de la sala
@@ -167,12 +218,12 @@ def get_next_consecutivo(id_sala):
             consecutivo=1
         )
         db.session.add(consecutivo)
-        db.session.flush()
+        # NO flush aquí - se hará con el commit principal
         return 1
     else:
         # Incrementar consecutivo
         consecutivo.consecutivo += 1
-        db.session.flush()
+        # NO flush aquí - se hará con el commit principal
         return consecutivo.consecutivo
 
 
@@ -231,6 +282,49 @@ def get_visitas_activas(id_doctor=None, id_sala=None):
     return query.order_by(VisitaEmergencia.timestamp.desc()).all()
 
 
+def elegir_sala_menos_carga():
+    """
+    Evalúa carga de todas las salas y retorna la mejor opción.
+    Criterio: sala con menos visitas activas Y camas/doctores disponibles.
+
+    Usado por el MAESTRO para balancear carga entre salas.
+
+    Returns:
+        int: ID de la sala con menos carga, o None si no hay sala disponible
+    """
+    salas_stats = []
+
+    for sala in Sala.query.filter_by(activa=True).all():
+        visitas_activas = VisitaEmergencia.query.filter_by(
+            id_sala=sala.id_sala, estado='activa'
+        ).count()
+
+        camas_libres = Cama.query.filter_by(
+            id_sala=sala.id_sala, ocupada=False
+        ).count()
+
+        doctores_libres = Doctor.query.filter_by(
+            id_sala=sala.id_sala, disponible=True, activo=True
+        ).count()
+
+        # Solo considerar salas con recursos disponibles
+        if camas_libres > 0 and doctores_libres > 0:
+            salas_stats.append({
+                'id_sala': sala.id_sala,
+                'visitas_activas': visitas_activas,
+                'camas_libres': camas_libres,
+                'doctores_libres': doctores_libres
+            })
+
+    if not salas_stats:
+        return None  # No hay sala con recursos disponibles
+
+    # Ordenar por: menos visitas activas, más camas libres
+    salas_stats.sort(key=lambda x: (x['visitas_activas'], -x['camas_libres']))
+
+    return salas_stats[0]['id_sala']
+
+
 def get_metricas_dashboard(id_sala=None):
     """Obtiene métricas para el dashboard (OPTIMIZADO - UNA SOLA QUERY)"""
     from sqlalchemy import func, case, and_
@@ -278,15 +372,19 @@ from sqlalchemy import event
 def generate_folio(mapper, connection, target):
     """
     Genera el folio automáticamente antes de insertar la visita.
-    Formato: IDPACIENTE+IDDOCTOR+SALA+CONSECUTIVO
-    Ejemplo: 5+12+3+001
+    Formato: EMG-{YYYYMMDD}-{CONSECUTIVO:04d}
+    Ejemplo: EMG-20251126-0001
+
+    Nota: No incluye sala porque puede cambiar por redistribución.
     """
     if not target.folio:
-        # Obtener consecutivo para la sala
-        consecutivo = get_next_consecutivo(target.id_sala)
+        from datetime import datetime
+        # Usar consecutivo global (sala=0 para consecutivo general)
+        consecutivo = get_next_consecutivo(id_sala=0)
 
-        # Generar folio: IDPACIENTE+IDDOCTOR+SALA+CONSECUTIVO
-        target.folio = f"{target.id_paciente}+{target.id_doctor}+{target.id_sala}+{consecutivo:03d}"
+        # Generar folio con fecha del día
+        fecha_str = datetime.utcnow().strftime('%Y%m%d')
+        target.folio = f"EMG-{fecha_str}-{consecutivo:04d}"
 
 
 # ============================================================================

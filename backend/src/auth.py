@@ -46,17 +46,30 @@ def init_default_users():
     Inicializa usuarios por defecto si no existen.
     Debe llamarse al iniciar la aplicación.
 
-    NOTA: Se crean usuarios con roles 'doctor', 'trabajador_social' y 'paciente'
-    según especificaciones del proyecto.
+    Segun requisitos del proyecto:
+    - TRABAJADOR SOCIAL: Crea visitas de emergencia
+    - DOCTOR: Cierra visitas (solo las suyas)
     """
-    # Usuarios de prueba para cada rol
+    # Usuarios de prueba basados en poblardb.py
     usuarios_prueba = [
-        {'username': 'doctor1', 'password': 'doc123', 'rol': 'doctor', 'id_relacionado': 1},
-        {'username': 'doctor2', 'password': 'doc123', 'rol': 'doctor', 'id_relacionado': 2},
-        {'username': 'trabajador1', 'password': 'trab123', 'rol': 'trabajador_social', 'id_relacionado': 1},
-        {'username': 'trabajador2', 'password': 'trab123', 'rol': 'trabajador_social', 'id_relacionado': 2},
-        {'username': 'paciente1', 'password': 'pac123', 'rol': 'paciente', 'id_relacionado': 1},
-        {'username': 'paciente2', 'password': 'pac123', 'rol': 'paciente', 'id_relacionado': 2},
+        # Trabajadores sociales (1 por sala)
+        {'username': 'social1', 'password': '1234', 'rol': 'trabajador_social', 'id_relacionado': 1},
+        {'username': 'social2', 'password': '1234', 'rol': 'trabajador_social', 'id_relacionado': 2},
+        {'username': 'social3', 'password': '1234', 'rol': 'trabajador_social', 'id_relacionado': 3},
+        {'username': 'social4', 'password': '1234', 'rol': 'trabajador_social', 'id_relacionado': 4},
+        # Doctores (3 por sala = 12 total, id_relacionado mapea a doctor.id_doctor)
+        {'username': 'doctor1', 'password': 'doctor1', 'rol': 'doctor', 'id_relacionado': 1},
+        {'username': 'doctor2', 'password': 'doctor2', 'rol': 'doctor', 'id_relacionado': 2},
+        {'username': 'doctor3', 'password': 'doctor3', 'rol': 'doctor', 'id_relacionado': 3},
+        {'username': 'doctor4', 'password': 'doctor4', 'rol': 'doctor', 'id_relacionado': 4},
+        {'username': 'doctor5', 'password': 'doctor5', 'rol': 'doctor', 'id_relacionado': 5},
+        {'username': 'doctor6', 'password': 'doctor6', 'rol': 'doctor', 'id_relacionado': 6},
+        {'username': 'doctor7', 'password': 'doctor7', 'rol': 'doctor', 'id_relacionado': 7},
+        {'username': 'doctor8', 'password': 'doctor8', 'rol': 'doctor', 'id_relacionado': 8},
+        {'username': 'doctor9', 'password': 'doctor9', 'rol': 'doctor', 'id_relacionado': 9},
+        {'username': 'doctor10', 'password': 'doctor10', 'rol': 'doctor', 'id_relacionado': 10},
+        {'username': 'doctor11', 'password': 'doctor11', 'rol': 'doctor', 'id_relacionado': 11},
+        {'username': 'doctor12', 'password': 'doctor12', 'rol': 'doctor', 'id_relacionado': 12},
     ]
 
     for user_data in usuarios_prueba:
@@ -106,15 +119,6 @@ def get_user_info(user):
             info['nombre'] = trabajador.nombre
             info['sala_id'] = trabajador.id_sala
 
-    elif user.rol == 'paciente' and user.id_relacionado:
-        from models import Paciente
-        paciente = Paciente.query.get(user.id_relacionado)
-        if paciente:
-            info['nombre'] = paciente.nombre
-            info['edad'] = paciente.edad
-            info['sexo'] = paciente.sexo
-            info['telefono'] = paciente.telefono
-
     return info
 
 
@@ -122,8 +126,7 @@ def get_rol_display(rol):
     """Retorna el nombre del rol para mostrar en la UI"""
     roles_display = {
         'doctor': 'Doctor',
-        'trabajador_social': 'Trabajador Social',
-        'paciente': 'Paciente'
+        'trabajador_social': 'Trabajador Social'
     }
     return roles_display.get(rol, rol)
 
@@ -141,3 +144,69 @@ def can_access_sala(user, id_sala):
         return user_info['sala_id'] == id_sala
 
     return False
+
+
+def init_all_salas_resources():
+    """
+    Inicializa recursos de TODAS las salas (1-4).
+    Cada nodo tiene copia completa de todos los datos.
+
+    Esto implementa la BD distribuida replicada donde:
+    - 4 salas de emergencia
+    - 3 doctores por sala (12 total)
+    - 10 camas por sala (40 total)
+    - 1 trabajador social por sala (4 total)
+    """
+    from models import db, Sala, Doctor, Cama, TrabajadorSocial
+
+    # Solo inicializar si no hay salas
+    if Sala.query.count() > 0:
+        print("[INIT] Recursos ya existen, saltando inicialización")
+        return
+
+    NUM_SALAS = 4  # 4 salas de emergencia
+
+    for sala_id in range(1, NUM_SALAS + 1):
+        # 1. Crear sala
+        sala = Sala(
+            id_sala=sala_id,
+            numero=sala_id,
+            activa=True
+        )
+        db.session.add(sala)
+        db.session.flush()
+
+        # 2. Crear 3 doctores por sala (basado en poblardb.py)
+        doctores_base = [
+            ("Dr. Ricardo Mendiola", "Medicina General"),
+            ("Dra. Elena Vázquez", "Urgencias"),
+            ("Dr. Samuel Kim", "Medicina Interna")
+        ]
+        for nombre, especialidad in doctores_base:
+            doctor = Doctor(
+                nombre=f"{nombre} S{sala_id}",
+                especialidad=especialidad,
+                id_sala=sala_id,
+                disponible=True,
+                activo=True
+            )
+            db.session.add(doctor)
+
+        # 3. Crear 10 camas por sala (101-110, 201-210, etc.)
+        for i in range(1, 11):
+            cama = Cama(
+                numero=sala_id * 100 + i,  # 101-110, 201-210, etc.
+                id_sala=sala_id,
+                ocupada=False
+            )
+            db.session.add(cama)
+
+        # 4. Crear 1 trabajador social por sala
+        trabajador = TrabajadorSocial(
+            nombre=f"Lic. Roberto Gómez S{sala_id}",
+            id_sala=sala_id
+        )
+        db.session.add(trabajador)
+
+    db.session.commit()
+    print(f"[INIT] Recursos inicializados: {NUM_SALAS} salas x (3 doctores + 10 camas + 1 TS)")
