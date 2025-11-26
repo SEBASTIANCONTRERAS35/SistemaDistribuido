@@ -88,28 +88,25 @@ def get_startup_delay() -> float:
         sock.close()
 
         last_octet = int(ip.split('.')[-1])
-        # Delay rápido: 1s base + (0-9s) basado en último dígito del octeto
-        # Esto crea grupos de 10 IPs con ~1s de separación
-        delay = 1.0 + (last_octet % 10) * 1.0
-        logger.info(f"[ID_GEN] IP={ip}, last_octet={last_octet}, calculated delay={delay:.2f}s")
+        # Delay ultra-corto: 0.1-1.0s
+        # IP .12 → 0.2s, IP .16 → 0.6s, IP .20 → 1.0s
+        delay = 0.1 + (last_octet % 10) * 0.1
+        logger.info(f"[ID_GEN] IP={ip}, last_octet={last_octet}, calculated delay={delay:.1f}s")
         return delay
     except Exception as e:
         # Fallback: delay aleatorio
-        delay = random.uniform(1.0, 5.0)
+        delay = random.uniform(0.1, 0.5)
         logger.warning(f"[ID_GEN] Could not detect IP, using random delay={delay:.2f}s: {e}")
         return delay
 
 
-def discover_existing_ids(timeout: float = 3.0) -> set:
+def discover_existing_ids(timeout: float = 1.0) -> set:
     """
-    Descubre IDs de nodos existentes via multicast.
-
-    FASE 9 FIX: Discovery ACTIVO - además de escuchar, envía
-    ID_QUERY periódicamente para provocar respuestas inmediatas
-    de nodos existentes.
+    Discovery ultra-rápido con queries agresivos cada 100ms.
+    Termina early si detecta nodos (0.5s después de primer nodo).
 
     Args:
-        timeout: Segundos a escuchar (default 5.0)
+        timeout: Tiempo máximo de discovery (default 1.0s)
 
     Returns:
         set: Conjunto de IDs ya en uso
@@ -128,7 +125,7 @@ def discover_existing_ids(timeout: float = 3.0) -> set:
             pass
 
         sock.bind(('', multicast_port))
-        sock.settimeout(0.5)
+        sock.settimeout(0.05)  # 50ms timeout para recv (permite queries frecuentes)
 
         # Unirse a grupo multicast
         try:
@@ -140,47 +137,58 @@ def discover_existing_ids(timeout: float = 3.0) -> set:
         # Configurar TTL para envío multicast
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
 
-        logger.info(f"[ID_GEN] 🔍 Active discovery for {timeout}s (listening + sending queries)...")
+        logger.info(f"[ID_GEN] 🔍 Ultra-fast discovery ({timeout}s max, early exit enabled)...")
 
-        # Enviar ID_QUERY inicial
+        # Query agresivo
         query_msg = json.dumps({
             'type': 'ID_QUERY',
             'timestamp': time.time()
         }).encode()
 
-        try:
-            sock.sendto(query_msg, (multicast_group, multicast_port))
-            logger.info("[ID_GEN] 📤 Sent ID_QUERY to multicast")
-        except Exception as e:
-            logger.warning(f"[ID_GEN] Failed to send ID_QUERY: {e}")
-
         start_time = time.time()
-        query_interval = 1.0  # Enviar query cada segundo
-        last_query = start_time
+        last_query = 0
+        first_node_found_at = None
 
-        while time.time() - start_time < timeout:
+        while True:
+            current_time = time.time()
+            elapsed = current_time - start_time
+
+            # Timeout principal
+            if elapsed >= timeout:
+                break
+
+            # Early exit: 0.5s después de encontrar primer nodo
+            if first_node_found_at and (current_time - first_node_found_at) >= 0.5:
+                logger.info(f"[ID_GEN] Early exit after 0.5s - found {len(existing_ids)} node(s)")
+                break
+
+            # Enviar query cada 100ms (10 queries por segundo)
+            if current_time - last_query >= 0.1:
+                try:
+                    sock.sendto(query_msg, (multicast_group, multicast_port))
+                    last_query = current_time
+                except:
+                    pass
+
+            # Escuchar respuestas
             try:
                 data, addr = sock.recvfrom(1024)
                 msg = json.loads(data.decode())
 
-                # Aceptar ANNOUNCE o ID_RESPONSE
+                # Aceptar ANNOUNCE, ID_RESPONSE o HEARTBEAT
                 if msg.get('node_id'):
                     msg_type = msg.get('type', '')
                     if msg_type in ('ANNOUNCE', 'ID_RESPONSE', 'HEARTBEAT'):
                         node_id = msg['node_id']
                         if node_id not in existing_ids:
                             existing_ids.add(node_id)
-                            logger.info(f"[ID_GEN] ✓ Found node ID={node_id} at {addr[0]} (via {msg_type})")
+                            logger.info(f"[ID_GEN] ✓ Found node ID={node_id} (via {msg_type})")
+
+                            # Marcar cuando encontramos el primer nodo
+                            if first_node_found_at is None:
+                                first_node_found_at = current_time
 
             except socket.timeout:
-                # Enviar query periódicamente
-                current_time = time.time()
-                if current_time - last_query >= query_interval:
-                    try:
-                        sock.sendto(query_msg, (multicast_group, multicast_port))
-                        last_query = current_time
-                    except:
-                        pass
                 continue
             except json.JSONDecodeError:
                 continue
@@ -194,7 +202,7 @@ def discover_existing_ids(timeout: float = 3.0) -> set:
         logger.warning(f"[ID_GEN] Discovery failed: {e}")
 
     if existing_ids:
-        logger.info(f"[ID_GEN] Discovery complete: found IDs {sorted(existing_ids)}")
+        logger.info(f"[ID_GEN] Discovery complete: found {len(existing_ids)} node(s) - IDs {sorted(existing_ids)}")
     else:
         logger.info("[ID_GEN] Discovery complete: no existing nodes found")
 
@@ -257,9 +265,9 @@ def get_or_create_node_id_v2(persist_file: str = None, force_new: bool = False) 
     logger.info(f"[ID_GEN] ⏳ Startup delay: {delay:.2f}s (desynchronizing with other VMs)")
     time.sleep(delay)
 
-    # 2. Discovery de IDs existentes (escuchar 3 segundos)
+    # 2. Discovery ultra-rápido (1s max, early exit enabled)
     logger.info("[ID_GEN] 🔍 Discovering existing nodes...")
-    existing_ids = discover_existing_ids(timeout=3.0)
+    existing_ids = discover_existing_ids(timeout=1.0)
 
     if existing_ids:
         logger.info(f"[ID_GEN] Found {len(existing_ids)} existing node(s): {sorted(existing_ids)}")
