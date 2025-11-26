@@ -134,9 +134,18 @@ class VisitasScreen(Screen):
     def compose(self) -> ComposeResult:
         """Compose the visitas screen UI"""
 
+        # Título personalizado según rol
+        rol = self.user_info.get('rol', '')
+        if rol == 'paciente':
+            title = "📋 MIS VISITAS DE EMERGENCIA"
+        elif rol == 'doctor':
+            title = "📋 VISITAS DE EMERGENCIA (Vista Doctor)"
+        else:
+            title = "📋 GESTIÓN DE VISITAS DE EMERGENCIA"
+
         # Header with stats
         with Container(id="visitas-header"):
-            yield Label(f"📋 VISITAS DE EMERGENCIA", id="header-title")
+            yield Label(title, id="header-title")
             # Display user with role if available (fallback to username if nombre not found)
             if self.user_info:
                 user_display = self.user_info.get('nombre') or self.user_info.get('username', self.username)
@@ -147,7 +156,7 @@ class VisitasScreen(Screen):
             stats_text = f"👤 {user_display}{rol_display} | Nodo {self.bully_manager.node_id} | {self.bully_manager.state.value.upper()}"
             yield Label(stats_text, id="header-stats")
 
-        # Toolbar with search, filter, and new visit button
+        # Toolbar with search, filter, and new visit button (role-based)
         with Horizontal(id="toolbar"):
             yield Input(
                 placeholder="🔍 Buscar por folio, paciente o doctor...",
@@ -164,7 +173,9 @@ class VisitasScreen(Screen):
                 id="filter-select",
                 allow_blank=False
             )
-            yield Button("➕ Nueva Visita", variant="primary", id="new-visit-btn")
+            # Solo trabajador social puede crear visitas
+            if rol == 'trabajador_social':
+                yield Button("➕ Nueva Visita", variant="primary", id="new-visit-btn")
 
         # DataTable for visits
         yield DataTable(id="visitas-table", zebra_stripes=True, cursor_type="row")
@@ -214,14 +225,23 @@ class VisitasScreen(Screen):
             self.is_loading = False
 
     def _fetch_visitas_from_db(self) -> List[Dict[str, Any]]:
-        """Fetch visits from database (runs in thread pool)"""
+        """Fetch visits from database filtered by user role (runs in thread pool)"""
         with self.flask_app.app_context():
             from models import VisitaEmergencia
 
-            # Query all visits ordered by timestamp desc
-            visitas = VisitaEmergencia.query.order_by(
-                VisitaEmergencia.timestamp.desc()
-            ).all()
+            rol = self.user_info.get('rol', '')
+
+            if rol == 'paciente':
+                # Paciente: solo ver visitas donde él es el paciente
+                id_paciente = self.user_info.get('id_relacionado')
+                visitas = VisitaEmergencia.query.filter_by(
+                    id_paciente=id_paciente
+                ).order_by(VisitaEmergencia.timestamp.desc()).all()
+            else:
+                # Doctor y Trabajador Social: ver todas las visitas
+                visitas = VisitaEmergencia.query.order_by(
+                    VisitaEmergencia.timestamp.desc()
+                ).all()
 
             # Convert to dict format
             return [v.to_dict() for v in visitas]
@@ -346,7 +366,9 @@ class VisitasScreen(Screen):
                     VisitDetailModal(
                         visita=visita,
                         flask_app=self.flask_app,
-                        username=self.username
+                        bully_manager=self.bully_manager,
+                        username=self.username,
+                        user_info=self.user_info
                     )
                 )
 
@@ -356,7 +378,12 @@ class VisitasScreen(Screen):
         self.load_visitas()
 
     def action_new_visit(self) -> None:
-        """Create new visit"""
+        """Create new visit - only for trabajador_social"""
+        # Verificar permisos
+        if self.user_info.get('rol') != 'trabajador_social':
+            self.notify("❌ No tienes permiso para crear visitas", severity="error")
+            return
+
         from .simple_create_visit import SimpleCreateVisitScreen
 
         def handle_result(result):
@@ -371,7 +398,7 @@ class VisitasScreen(Screen):
                 # Refresh table
                 self.load_visitas()
 
-        screen = SimpleCreateVisitScreen(self.flask_app, self.bully_manager, self.username)
+        screen = SimpleCreateVisitScreen(self.flask_app, self.bully_manager, self.username, self.user_info)
         self.app.push_screen(screen, handle_result)
 
     def action_show_cluster(self) -> None:

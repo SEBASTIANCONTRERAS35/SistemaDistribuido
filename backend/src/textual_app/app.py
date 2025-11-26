@@ -68,8 +68,9 @@ class MedicalApp(App):
         # Current user (set after login)
         self.current_user = None
         
-        # Theme mode
-        self.dark_mode = True
+        # Theme mode - solarized-light by default
+        self.dark_mode = False
+        self.theme = "solarized-light"
     
     def on_mount(self) -> None:
         """Called when app is mounted - show splash screen"""

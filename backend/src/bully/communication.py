@@ -7,25 +7,32 @@ import time
 import logging
 import traceback
 from dataclasses import dataclass, asdict
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
 
 @dataclass
 class Message:
-    """Mensaje simple para comunicación entre nodos"""
-    type: str           # ELECTION, OK, COORDINATOR, HEARTBEAT
+    """Mensaje para comunicación entre nodos (Bully, Bloqueos, Consenso)"""
+    type: str           # ELECTION, OK, COORDINATOR, HEARTBEAT, LOCK_REQUEST, etc.
     sender_id: int      # Quién envía
     timestamp: float    # Cuándo se envía
-    
+    data: Optional[Dict[str, Any]] = None  # Datos adicionales para bloqueos/consenso
+
     def to_json(self) -> str:
         """Serializar a JSON"""
         return json.dumps(asdict(self))
-    
+
     @classmethod
-    def from_json(cls, data: str) -> 'Message':
+    def from_json(cls, json_data: str) -> 'Message':
         """Deserializar desde JSON"""
-        return cls(**json.loads(data))
+        obj = json.loads(json_data)
+        return cls(
+            type=obj['type'],
+            sender_id=obj['sender_id'],
+            timestamp=obj['timestamp'],
+            data=obj.get('data')
+        )
 
 class CommunicationManager:
     """

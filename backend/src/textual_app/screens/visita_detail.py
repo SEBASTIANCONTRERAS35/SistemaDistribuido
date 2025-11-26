@@ -1,7 +1,9 @@
 """
 Visit Detail Modal - Shows detailed information about a visit
+With distributed lock support for closing visits.
 """
 
+import asyncio
 from datetime import datetime
 from typing import Dict, Any
 
@@ -10,6 +12,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Static, Button, Label
 from textual.containers import Container, Vertical, Horizontal, Grid
 from textual.binding import Binding
+from textual import work
 from rich.text import Text
 from rich.panel import Panel
 
@@ -108,11 +111,29 @@ class VisitDetailModal(ModalScreen):
     }
     """
 
-    def __init__(self, visita: Dict[str, Any], flask_app, username: str):
+    def __init__(self, visita: Dict[str, Any], flask_app, bully_manager, username: str, user_info: Dict[str, Any] = None):
         super().__init__()
         self.visita = visita
         self.flask_app = flask_app
+        self.bully_manager = bully_manager
         self.username = username
+        self.user_info = user_info or {}
+
+    def _puede_cerrar_visita(self) -> bool:
+        """Determina si el usuario actual puede cerrar esta visita"""
+        rol = self.user_info.get('rol', '')
+
+        # Trabajador social puede cerrar cualquier visita
+        if rol == 'trabajador_social':
+            return True
+
+        # Doctor solo puede cerrar visitas donde él es el doctor asignado
+        if rol == 'doctor':
+            id_relacionado = self.user_info.get('id_relacionado')
+            return self.visita.get('id_doctor') == id_relacionado
+
+        # Paciente no puede cerrar visitas
+        return False
 
     def compose(self) -> ComposeResult:
         """Compose the detail modal UI"""
@@ -193,8 +214,8 @@ class VisitDetailModal(ModalScreen):
 
             # Buttons
             with Horizontal(id="button-container"):
-                # Show "Cerrar Visita" button only if visit is active
-                if self.visita.get('estado') == 'activa':
+                # Show "Cerrar Visita" button only if visit is active AND user has permission
+                if self.visita.get('estado') == 'activa' and self._puede_cerrar_visita():
                     yield Button(
                         "🩺 Cerrar Visita",
                         variant="success",
@@ -210,20 +231,174 @@ class VisitDetailModal(ModalScreen):
         elif event.button.id == "cerrar-visita-btn":
             self.action_cerrar_visita()
 
-    def action_cerrar_visita(self) -> None:
-        """Close the visit - TODO: Implement full closure workflow"""
-        self.notify(
-            "🚧 Funcionalidad de cierre en construcción",
-            title="Próximamente",
-            severity="warning",
-            timeout=3
-        )
-        # TODO: Implement visit closure
-        # - Show form to enter diagnostico
-        # - Update visit in DB
-        # - Replicate to cluster
-        # - Refresh parent screen
-        # - Close modal
+    @work(exclusive=True)
+    async def action_cerrar_visita(self) -> None:
+        """
+        Close the visit with distributed locks.
+
+        Protocol:
+        1. Verify user has permission to close
+        2. Acquire distributed locks on doctor and cama
+        3. Release resources in local DB
+        4. Mark visit as completed
+        5. Replicate to cluster via consensus
+        6. Release distributed locks
+        """
+        # Doble validación de permisos
+        if not self._puede_cerrar_visita():
+            self.notify("❌ No tienes permiso para cerrar esta visita", severity="error")
+            return
+
+        folio = self.visita.get('folio')
+        if not folio:
+            self.notify("Error: No se encontro el folio", severity="error")
+            return
+
+        self.notify("Cerrando visita...", severity="information")
+
+        try:
+            result = await asyncio.to_thread(
+                self._cerrar_visita_db,
+                folio
+            )
+
+            if result['success']:
+                self.notify(
+                    f"Visita {folio} cerrada exitosamente",
+                    title="Visita Cerrada",
+                    severity="information",
+                    timeout=3
+                )
+                # Dismiss with result to refresh parent
+                self.dismiss({'action': 'closed', 'folio': folio})
+            else:
+                self.notify(
+                    f"Error: {result['error']}",
+                    severity="error",
+                    timeout=5
+                )
+
+        except Exception as e:
+            self.notify(f"Error: {str(e)}", severity="error")
+
+    def _cerrar_visita_db(self, folio: str) -> Dict[str, Any]:
+        """
+        Close visit in database with distributed locks.
+
+        Args:
+            folio: Visit folio to close
+
+        Returns:
+            Dict with success status and error message if failed
+        """
+        with self.flask_app.app_context():
+            from models import db, VisitaEmergencia, Doctor, Cama
+            from bully.distributed_locks import (
+                solicitar_bloqueo_distribuido,
+                liberar_bloqueo_distribuido,
+                replicar_liberacion_con_consenso
+            )
+            import logging
+            logger = logging.getLogger(__name__)
+
+            doctor_locked = False
+            cama_locked = False
+            doctor_id = None
+            cama_id = None
+
+            try:
+                # 1. Find the visit
+                visita = VisitaEmergencia.query.filter_by(folio=folio).first()
+                if not visita:
+                    return {'success': False, 'error': 'Visita no encontrada'}
+
+                if visita.estado == 'completada':
+                    return {'success': False, 'error': 'La visita ya esta cerrada'}
+
+                doctor_id = visita.id_doctor
+                cama_id = visita.id_cama
+
+                logger.info(f"[VISIT-CLOSE] Closing visit {folio}: doctor={doctor_id}, cama={cama_id}")
+
+                # 2. Acquire distributed lock on doctor
+                # Note: For closing, we need to lock resources that are currently OCCUPIED
+                # The verification function checks availability, so we skip it for closing
+                logger.info(f"[VISIT-CLOSE] Attempting to lock doctor {doctor_id}")
+                if solicitar_bloqueo_distribuido(
+                    self.bully_manager,
+                    self.flask_app,
+                    'DOCTOR',
+                    doctor_id
+                ):
+                    doctor_locked = True
+                    logger.info(f"[VISIT-CLOSE] Doctor {doctor_id} locked")
+                else:
+                    # For closing, we proceed even if lock fails (resource might be marked occupied)
+                    logger.warning(f"[VISIT-CLOSE] Could not lock doctor {doctor_id}, proceeding anyway")
+
+                # 3. Acquire distributed lock on cama
+                logger.info(f"[VISIT-CLOSE] Attempting to lock cama {cama_id}")
+                if solicitar_bloqueo_distribuido(
+                    self.bully_manager,
+                    self.flask_app,
+                    'CAMA',
+                    cama_id
+                ):
+                    cama_locked = True
+                    logger.info(f"[VISIT-CLOSE] Cama {cama_id} locked")
+                else:
+                    logger.warning(f"[VISIT-CLOSE] Could not lock cama {cama_id}, proceeding anyway")
+
+                # 4. Release resources in local DB
+                doctor = Doctor.query.get(doctor_id)
+                cama = Cama.query.get(cama_id)
+
+                if doctor:
+                    doctor.disponible = True
+                    logger.info(f"[VISIT-CLOSE] Doctor {doctor_id} marked as available")
+
+                if cama:
+                    cama.ocupada = False
+                    cama.id_paciente = None
+                    logger.info(f"[VISIT-CLOSE] Cama {cama_id} marked as free")
+
+                # 5. Close visit
+                visita.estado = 'completada'
+                visita.fecha_cierre = datetime.utcnow()
+
+                db.session.commit()
+                logger.info(f"[VISIT-CLOSE] Visit {folio} closed locally")
+
+                # 6. Replicate resource release to other nodes (consensus)
+                logger.info(f"[VISIT-CLOSE] Replicating resource release to cluster...")
+                replicar_liberacion_con_consenso(
+                    self.bully_manager,
+                    self.flask_app,
+                    doctor_id,
+                    cama_id
+                )
+
+                # 7. Release distributed locks
+                if doctor_locked:
+                    liberar_bloqueo_distribuido(self.bully_manager, 'DOCTOR', doctor_id)
+                if cama_locked:
+                    liberar_bloqueo_distribuido(self.bully_manager, 'CAMA', cama_id)
+
+                logger.info(f"[VISIT-CLOSE] Visit closure complete: {folio}")
+
+                return {'success': True, 'folio': folio}
+
+            except Exception as e:
+                db.session.rollback()
+                logger.error(f"[VISIT-CLOSE] Error closing visit: {e}")
+
+                # Clean up locks on error
+                if doctor_locked and doctor_id:
+                    liberar_bloqueo_distribuido(self.bully_manager, 'DOCTOR', doctor_id)
+                if cama_locked and cama_id:
+                    liberar_bloqueo_distribuido(self.bully_manager, 'CAMA', cama_id)
+
+                return {'success': False, 'error': str(e)}
 
     def action_dismiss(self) -> None:
         """Dismiss the modal"""

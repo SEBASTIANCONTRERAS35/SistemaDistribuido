@@ -32,7 +32,8 @@ class BullyNode:
                  tcp_port: int = None, udp_port: int = None,
                  use_discovery: bool = False,
                  multicast_group: str = '224.0.0.100',
-                 multicast_port: int = 5005):
+                 multicast_port: int = 5005,
+                 flask_app=None):
         """
         Inicializa nodo Bully.
 
@@ -44,9 +45,11 @@ class BullyNode:
             use_discovery: Si True, usa auto-descubrimiento dinámico
             multicast_group: Grupo multicast para descubrimiento
             multicast_port: Puerto multicast para descubrimiento
+            flask_app: Aplicacion Flask para consultas de BD (necesario para bloqueos)
         """
         self.node_id = node_id
         self.use_discovery = use_discovery
+        self.flask_app = flask_app  # Para bloqueos distribuidos
 
         # Modo dinámico vs estático
         if use_discovery:
@@ -111,10 +114,15 @@ class BullyNode:
         # Iniciar comunicación
         self.comm.start()
 
-        # Registrar handlers de mensajes
+        # Registrar handlers de mensajes Bully
         self.comm.register_tcp_handler('ELECTION', self._handle_election)
         self.comm.register_tcp_handler('COORDINATOR', self._handle_coordinator)
         self.comm.register_udp_handler('HEARTBEAT', self._handle_heartbeat)
+
+        # Registrar handlers de bloqueos distribuidos (si hay flask_app)
+        if self.flask_app:
+            self._register_lock_handlers()
+            logger.info(f"[Node-{self.node_id}] [BULLY] Distributed lock handlers registered")
 
         # Iniciar discovery si estamos en modo dinámico
         if self.use_discovery:
@@ -735,3 +743,52 @@ class BullyNode:
             'is_leader': self.is_leader(),
             'time_since_last_heartbeat': time.time() - self.last_heartbeat_received
         }
+
+    # ========================================================================
+    # BLOQUEOS DISTRIBUIDOS Y CONSENSO
+    # ========================================================================
+
+    def _register_lock_handlers(self):
+        """
+        Registra handlers para mensajes de bloqueo distribuido y consenso.
+        Requiere que self.flask_app esté configurado.
+        """
+        from bully.distributed_locks import (
+            handle_lock_request,
+            handle_unlock_request,
+            handle_consensus_request,
+            LOCK_REQUEST,
+            UNLOCK_REQUEST,
+            CONSENSUS_REQUEST
+        )
+
+        # Crear wrappers que pasan flask_app y node_id
+        def lock_handler(msg):
+            return handle_lock_request(msg, self.flask_app, self.node_id)
+
+        def unlock_handler(msg):
+            return handle_unlock_request(msg, self.node_id)
+
+        def consensus_handler(msg):
+            return handle_consensus_request(msg, self.flask_app, self.node_id)
+
+        # Registrar handlers TCP
+        self.comm.register_tcp_handler(LOCK_REQUEST, lock_handler)
+        self.comm.register_tcp_handler(UNLOCK_REQUEST, unlock_handler)
+        self.comm.register_tcp_handler(CONSENSUS_REQUEST, consensus_handler)
+
+        logger.info(f"[Node-{self.node_id}] [LOCKS] Handlers registered: LOCK_REQUEST, UNLOCK_REQUEST, CONSENSUS_REQUEST")
+
+    def set_flask_app(self, flask_app):
+        """
+        Configura la aplicacion Flask despues de la inicializacion.
+        Util cuando flask_app no esta disponible durante __init__.
+
+        Args:
+            flask_app: Instancia de Flask app
+        """
+        self.flask_app = flask_app
+        if self.running:
+            # Si ya estamos corriendo, registrar handlers ahora
+            self._register_lock_handlers()
+            logger.info(f"[Node-{self.node_id}] [LOCKS] Flask app configured, handlers registered")

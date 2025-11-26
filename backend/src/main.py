@@ -103,7 +103,8 @@ def create_bully_manager(app):
             udp_port=udp_port,
             use_discovery=True,
             multicast_group=Config.MULTICAST_GROUP,
-            multicast_port=Config.MULTICAST_PORT
+            multicast_port=Config.MULTICAST_PORT,
+            flask_app=app  # Para bloqueos distribuidos
         )
     else:
         # Static mode: use provided NODE_ID
@@ -121,7 +122,8 @@ def create_bully_manager(app):
             cluster_nodes=cluster_nodes,
             tcp_port=Config.TCP_PORT,
             udp_port=Config.UDP_PORT,
-            use_discovery=False
+            use_discovery=False,
+            flask_app=app  # Para bloqueos distribuidos
         )
 
     # Start Bully system
