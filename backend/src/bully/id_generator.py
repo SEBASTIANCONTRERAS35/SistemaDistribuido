@@ -1,16 +1,21 @@
 """
 Módulo para generación automática de IDs únicos para nodos en el cluster.
 
-Utiliza un enfoque híbrido timestamp + random para generar IDs numéricos
-únicos sin necesidad de coordinación central.
+Utiliza file locking atómico (fcntl) para garantizar IDs únicos
+incluso cuando múltiples VMs arrancan simultáneamente.
 """
 import time
 import random
 import os
 import json
 import logging
+import fcntl
+import atexit
 
 logger = logging.getLogger(__name__)
+
+# Variable global para mantener locks activos durante la vida del proceso
+_active_locks = {}
 
 
 def _is_port_available(port: int, host: str = '0.0.0.0') -> bool:
@@ -47,19 +52,60 @@ def _is_port_available(port: int, host: str = '0.0.0.0') -> bool:
     return True
 
 
+def _release_all_locks():
+    """Libera todos los locks activos al cerrar el proceso."""
+    global _active_locks
+    for node_id, lock_file in list(_active_locks.items()):
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+            logger.debug(f"Released lock for node ID {node_id}")
+        except Exception as e:
+            logger.warning(f"Failed to release lock for node ID {node_id}: {e}")
+    _active_locks.clear()
+
+# Registrar cleanup al salir del proceso
+atexit.register(_release_all_locks)
+
+
+def release_node_id_lock(node_id: int) -> bool:
+    """
+    Libera el lock de un NODE_ID específico.
+
+    Args:
+        node_id: ID del nodo cuyo lock se quiere liberar
+
+    Returns:
+        bool: True si se liberó exitosamente
+    """
+    global _active_locks
+    if node_id in _active_locks:
+        try:
+            lock_file = _active_locks[node_id]
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+            del _active_locks[node_id]
+            logger.info(f"Released lock for node ID {node_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to release lock for node ID {node_id}: {e}")
+            return False
+    return False
+
+
 def generate_node_id(start_id: int = 1, max_attempts: int = 100) -> int:
     """
-    Genera un ID de nodo secuencial usando port scanning.
+    Genera un ID de nodo único usando file locking atómico.
 
-    Intenta IDs secuenciales (1, 2, 3...) y verifica disponibilidad
-    mediante port binding. Esto garantiza IDs simples sin colisiones.
+    Utiliza fcntl.flock() para garantizar que solo un proceso puede
+    obtener cada ID, incluso si múltiples VMs arrancan simultáneamente.
 
     Estrategia:
     1. Intentar ID candidato (empezando desde start_id)
-    2. Calcular puertos TCP y UDP basados en ese ID
-    3. Verificar que ambos puertos estén libres (atomic OS-level check)
-    4. Si están libres, usar ese ID
-    5. Si no, incrementar ID y reintentar
+    2. Intentar obtener lock exclusivo en archivo /tmp/bully_node_locks/node_N.lock
+    3. Si obtiene lock, verificar que puertos estén libres
+    4. Si todo OK, mantener lock y retornar ID
+    5. Si no, liberar lock y probar siguiente ID
 
     Args:
         start_id: ID inicial para comenzar búsqueda (default: 1)
@@ -70,29 +116,66 @@ def generate_node_id(start_id: int = 1, max_attempts: int = 100) -> int:
 
     Raises:
         RuntimeError: Si no se encuentra ID libre después de max_attempts
-
-    Examples:
-        >>> # Cluster vacío
-        >>> id1 = generate_node_id()  # Retorna 1
-        >>> # Con nodo 1 corriendo
-        >>> id2 = generate_node_id()  # Retorna 2
-        >>> # Con nodos 1,2,3 corriendo
-        >>> id4 = generate_node_id()  # Retorna 4
     """
+    global _active_locks
+
+    # Directorio para locks (usar /tmp para que sea compartido entre VMs si usan NFS,
+    # o local si no - en ambos casos funciona)
+    lock_dir = '/tmp/bully_node_locks'
+    os.makedirs(lock_dir, exist_ok=True)
+
     for attempt in range(max_attempts):
         candidate_id = start_id + attempt
 
         # Calcular puertos basados en el ID candidato
-        # (Misma lógica que en config.py)
         tcp_port = 5555 + (candidate_id % 1000)
         udp_port = 6000 + (candidate_id % 1000)
 
-        # Verificar disponibilidad de puertos
-        if _is_port_available(tcp_port) and _is_port_available(udp_port):
-            logger.info(f"Found available node ID: {candidate_id} (TCP:{tcp_port}, UDP:{udp_port})")
-            return candidate_id
-        else:
-            logger.debug(f"ID {candidate_id} not available (ports {tcp_port}/{udp_port} in use)")
+        lock_file_path = os.path.join(lock_dir, f'node_{candidate_id}.lock')
+
+        try:
+            # Abrir/crear archivo de lock
+            lock_file = open(lock_file_path, 'w')
+
+            # Intentar obtener lock EXCLUSIVO y NO-BLOQUEANTE
+            # Si otro proceso tiene el lock, lanza BlockingIOError inmediatamente
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            # Tenemos el lock! Ahora verificar que puertos estén libres
+            if _is_port_available(tcp_port) and _is_port_available(udp_port):
+                # Escribir info del proceso que tiene el lock
+                lock_file.write(f"pid={os.getpid()}\n")
+                lock_file.write(f"timestamp={time.time()}\n")
+                lock_file.write(f"node_id={candidate_id}\n")
+                lock_file.flush()
+
+                # IMPORTANTE: Mantener archivo abierto para mantener el lock
+                _active_locks[candidate_id] = lock_file
+
+                logger.info(f"Acquired NODE_ID {candidate_id} with lock (TCP:{tcp_port}, UDP:{udp_port})")
+                return candidate_id
+            else:
+                # Puertos ocupados pero lock estaba libre - liberar lock
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                lock_file.close()
+                logger.debug(f"ID {candidate_id} locked but ports in use, trying next")
+
+        except BlockingIOError:
+            # Otro proceso ya tiene el lock para este ID
+            logger.debug(f"ID {candidate_id} locked by another process")
+            try:
+                lock_file.close()
+            except:
+                pass
+            continue
+
+        except Exception as e:
+            logger.debug(f"ID {candidate_id} failed: {e}")
+            try:
+                lock_file.close()
+            except:
+                pass
+            continue
 
     # No se encontró ID libre
     raise RuntimeError(

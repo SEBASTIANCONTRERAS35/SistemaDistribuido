@@ -4,6 +4,12 @@ Módulo de descubrimiento dinámico de nodos via multicast UDP.
 Permite que los nodos se descubran automáticamente en la red sin
 configuración previa. Ideal para clusters dinámicos donde los nodos
 pueden unirse/salir en cualquier momento.
+
+Incluye:
+- Descubrimiento via multicast UDP
+- Fallback via broadcast UDP (para redes sin multicast)
+- Resolución automática de colisiones de ID
+- Detección robusta de IP local
 """
 import socket
 import struct
@@ -11,9 +17,61 @@ import threading
 import time
 import json
 import logging
+import subprocess
 from typing import Dict, Callable, Tuple, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def get_local_ip() -> str:
+    """
+    Detecta IP local automáticamente. Funciona en VMs Debian.
+
+    Orden de prioridad:
+    1. Via routing a 8.8.8.8 (más confiable)
+    2. Via hostname
+    3. Via comando 'hostname -I' (Linux)
+    4. Fallback a 127.0.0.1
+
+    Returns:
+        str: IP local detectada
+    """
+    # 1. Intentar via routing (más confiable en VMs)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(2.0)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+        if ip and not ip.startswith('127.'):
+            logger.info(f"[DISCOVERY] Detected IP via routing: {ip}")
+            return ip
+    except Exception:
+        pass
+
+    # 2. Intentar via hostname
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and not ip.startswith('127.'):
+            logger.info(f"[DISCOVERY] Detected IP via hostname: {ip}")
+            return ip
+    except Exception:
+        pass
+
+    # 3. Buscar en interfaces de red (Linux - Debian)
+    try:
+        result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=2)
+        ips = result.stdout.strip().split()
+        for ip in ips:
+            if ip and not ip.startswith('127.') and '.' in ip:
+                logger.info(f"[DISCOVERY] Detected IP via hostname -I: {ip}")
+                return ip
+    except Exception:
+        pass
+
+    # 4. Fallback
+    logger.warning("[DISCOVERY] Could not detect IP, using 127.0.0.1")
+    return "127.0.0.1"
 
 
 class NodeDiscovery:
@@ -34,7 +92,9 @@ class NodeDiscovery:
         multicast_group: str = '224.0.0.100',
         multicast_port: int = 5005,
         announce_interval: int = 5,
-        node_timeout: int = 15
+        node_timeout: int = 15,
+        use_broadcast_fallback: bool = True,
+        multicast_ttl: int = 4
     ):
         """
         Inicializa el módulo de descubrimiento.
@@ -47,6 +107,8 @@ class NodeDiscovery:
             multicast_port: Puerto multicast
             announce_interval: Intervalo entre anuncios (segundos)
             node_timeout: Tiempo para considerar nodo muerto (segundos)
+            use_broadcast_fallback: Si True, también envía broadcast UDP como fallback
+            multicast_ttl: TTL para paquetes multicast (default 4 para redes complejas)
         """
         self.node_id = node_id
         self.tcp_port = tcp_port
@@ -55,6 +117,11 @@ class NodeDiscovery:
         self.multicast_port = multicast_port
         self.announce_interval = announce_interval
         self.node_timeout = node_timeout
+        self.use_broadcast_fallback = use_broadcast_fallback
+        self.multicast_ttl = multicast_ttl
+
+        # Detectar IP local automáticamente
+        self.local_ip = get_local_ip()
 
         # Diccionario de nodos descubiertos: {node_id: {'host': ip, 'tcp_port': ..., 'udp_port': ..., 'last_seen': timestamp}}
         self.discovered_nodes: Dict[int, dict] = {}
@@ -63,6 +130,7 @@ class NodeDiscovery:
         # Sockets
         self.send_socket: Optional[socket.socket] = None
         self.recv_socket: Optional[socket.socket] = None
+        self.broadcast_socket: Optional[socket.socket] = None
 
         # Control de threads
         self.running = False
@@ -74,8 +142,12 @@ class NodeDiscovery:
         self.on_node_discovered: Optional[Callable] = None
         self.on_node_lost: Optional[Callable] = None
         self.on_id_collision: Optional[Callable] = None  # Callback para colisión de IDs
+        self.on_collision_regenerate: Optional[Callable] = None  # Callback para regenerar ID
 
-        logger.info(f"[Node-{self.node_id}] [DISCOVERY] Initialized (multicast: {multicast_group}:{multicast_port})")
+        logger.info(f"[Node-{self.node_id}] [DISCOVERY] Initialized")
+        logger.info(f"[Node-{self.node_id}] [DISCOVERY]   Local IP: {self.local_ip}")
+        logger.info(f"[Node-{self.node_id}] [DISCOVERY]   Multicast: {multicast_group}:{multicast_port} (TTL={multicast_ttl})")
+        logger.info(f"[Node-{self.node_id}] [DISCOVERY]   Broadcast fallback: {use_broadcast_fallback}")
 
     def start(self):
         """Inicia el servicio de descubrimiento."""
@@ -85,9 +157,9 @@ class NodeDiscovery:
 
         self.running = True
 
-        # Crear socket de envío (multicast)
+        # Crear socket de envío (multicast) con TTL configurable
         self.send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        self.send_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+        self.send_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, self.multicast_ttl)
 
         # Crear socket de recepción (multicast)
         self.recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -97,30 +169,31 @@ class NodeDiscovery:
         try:
             self.recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         except AttributeError:
-            # SO_REUSEPORT no está disponible en todos los sistemas
             pass
 
         # Bind al puerto multicast
         self.recv_socket.bind(('', self.multicast_port))
 
-        # Unirse al grupo multicast
-        # IMPROVED: En macOS, intentamos obtener la IP local para mejor compatibilidad
+        # Unirse al grupo multicast usando la IP local ya detectada
         try:
-            # Intentar obtener IP de interfaz primaria (mejor para macOS)
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
-
-            # Usar IP local para membership (mejor routing en macOS)
-            mreq = struct.pack("4s4s", socket.inet_aton(self.multicast_group), socket.inet_aton(local_ip))
-            logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Joining multicast on interface {local_ip}")
+            mreq = struct.pack("4s4s", socket.inet_aton(self.multicast_group), socket.inet_aton(self.local_ip))
+            logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Joining multicast on interface {self.local_ip}")
         except Exception as e:
-            # Fallback a INADDR_ANY si falla detección de IP
+            # Fallback a INADDR_ANY
             mreq = struct.pack("4sl", socket.inet_aton(self.multicast_group), socket.INADDR_ANY)
             logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Joining multicast on INADDR_ANY (fallback)")
 
         self.recv_socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+
+        # Crear socket de broadcast si está habilitado
+        if self.use_broadcast_fallback:
+            try:
+                self.broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Broadcast socket created")
+            except Exception as e:
+                logger.warning(f"[Node-{self.node_id}] [DISCOVERY] Failed to create broadcast socket: {e}")
+                self.broadcast_socket = None
 
         # Iniciar threads
         self.announce_thread = threading.Thread(target=self._announce_loop, daemon=True)
@@ -149,16 +222,24 @@ class NodeDiscovery:
             self.send_socket.close()
         if self.recv_socket:
             self.recv_socket.close()
+        if self.broadcast_socket:
+            self.broadcast_socket.close()
 
         logger.info(f"[Node-{self.node_id}] [DISCOVERY] Service stopped")
 
     def _announce_loop(self):
-        """Thread que anuncia presencia periódicamente."""
+        """Thread que anuncia presencia periódicamente via multicast + broadcast."""
         logger.info(f"[Node-{self.node_id}] [DISCOVERY] Announce thread started")
 
         while self.running:
             try:
+                # Enviar via multicast
                 self._send_announce()
+
+                # También enviar via broadcast como fallback
+                if self.use_broadcast_fallback and self.broadcast_socket:
+                    self._send_announce_broadcast()
+
                 time.sleep(self.announce_interval)
             except Exception as e:
                 logger.error(f"[Node-{self.node_id}] [DISCOVERY] Error in announce loop: {e}")
@@ -214,7 +295,35 @@ class NodeDiscovery:
 
         data = json.dumps(message).encode('utf-8')
         self.send_socket.sendto(data, (self.multicast_group, self.multicast_port))
-        logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Sent ANNOUNCE")
+        logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Sent ANNOUNCE (multicast)")
+
+    def _send_announce_broadcast(self):
+        """
+        Envía mensaje ANNOUNCE via broadcast UDP como fallback.
+        Útil cuando multicast no funciona en la red.
+        """
+        if not self.broadcast_socket:
+            return
+
+        message = {
+            'type': 'ANNOUNCE',
+            'node_id': self.node_id,
+            'tcp_port': self.tcp_port,
+            'udp_port': self.udp_port,
+            'timestamp': time.time()
+        }
+
+        data = json.dumps(message).encode('utf-8')
+
+        # Calcular dirección broadcast de la subred (asume /24)
+        try:
+            ip_parts = self.local_ip.split('.')
+            if len(ip_parts) == 4:
+                broadcast_ip = '.'.join(ip_parts[:3]) + '.255'
+                self.broadcast_socket.sendto(data, (broadcast_ip, self.multicast_port))
+                logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Sent ANNOUNCE (broadcast to {broadcast_ip})")
+        except Exception as e:
+            logger.debug(f"[Node-{self.node_id}] [DISCOVERY] Broadcast failed: {e}")
 
     def _send_leave_message(self):
         """Envía mensaje LEAVE al salir."""
@@ -242,22 +351,25 @@ class NodeDiscovery:
             if sender_id == self.node_id:
                 sender_ip = addr[0]
 
-                # IMPROVED: Verificar si es un mensaje de loopback (mismo host)
-                # En macOS, socket.gethostbyname() puede retornar IP LAN en lugar de 127.0.0.1
-                # Por eso verificamos múltiples variantes de localhost
+                # Verificar si es un mensaje de loopback (mismo host)
+                # Incluimos nuestra IP local en la verificación
                 is_loopback = (
                     sender_ip == '127.0.0.1' or
                     sender_ip == 'localhost' or
                     sender_ip == '::1' or  # IPv6 localhost
                     sender_ip.startswith('127.') or  # Cualquier IP en 127.0.0.0/8
-                    sender_ip == '0.0.0.0'
+                    sender_ip == '0.0.0.0' or
+                    sender_ip == self.local_ip  # Es mi propia IP
                 )
 
                 # Si NO es loopback, entonces es una colisión real de ID
                 if not is_loopback:
                     logger.warning(f"[Node-{self.node_id}] [DISCOVERY] ⚠️  ID COLLISION detected! Node {sender_id} at {sender_ip}")
 
-                    # Notificar callback de colisión
+                    # Resolver colisión automáticamente
+                    self._handle_id_collision(sender_id, sender_ip)
+
+                    # Notificar callback de colisión (para logging/debug)
                     if self.on_id_collision:
                         threading.Thread(
                             target=self.on_id_collision,
@@ -277,6 +389,40 @@ class NodeDiscovery:
 
         except Exception as e:
             logger.error(f"[Node-{self.node_id}] [DISCOVERY] Error handling message: {e}")
+
+    def _handle_id_collision(self, conflicting_id: int, conflicting_ip: str):
+        """
+        Resuelve colisión de IDs automáticamente.
+
+        Estrategia: El nodo con IP mayor (lexicográficamente) conserva el ID.
+        El nodo con IP menor debe regenerar un nuevo ID y reiniciar.
+
+        Args:
+            conflicting_id: El ID en conflicto (mismo que self.node_id)
+            conflicting_ip: IP del otro nodo con el mismo ID
+        """
+        my_ip = self.local_ip
+
+        logger.warning(f"[Node-{self.node_id}] [DISCOVERY] Resolving collision: My IP={my_ip} vs {conflicting_ip}")
+
+        # Comparar IPs lexicográficamente (funciona para IPs en misma subred)
+        # El nodo con IP mayor conserva el ID
+        if my_ip > conflicting_ip:
+            logger.info(f"[Node-{self.node_id}] [DISCOVERY] My IP is higher - KEEPING ID {conflicting_id}")
+            return  # No hacer nada, mantener mi ID
+
+        # Mi IP es menor, debo regenerar un nuevo ID
+        logger.warning(f"[Node-{self.node_id}] [DISCOVERY] My IP is lower - MUST REGENERATE ID")
+
+        # Notificar al BullyNode para que regenere ID y reinicie
+        if self.on_collision_regenerate:
+            logger.info(f"[Node-{self.node_id}] [DISCOVERY] Triggering ID regeneration callback...")
+            threading.Thread(
+                target=self.on_collision_regenerate,
+                daemon=True
+            ).start()
+        else:
+            logger.error(f"[Node-{self.node_id}] [DISCOVERY] No regeneration callback set! Node will have duplicate ID!")
 
     def _handle_announce(self, message: dict, addr: Tuple[str, int]):
         """Maneja mensaje ANNOUNCE de otro nodo."""
@@ -347,7 +493,13 @@ class NodeDiscovery:
         with self.lock:
             return len(self.discovered_nodes)
 
-    def set_callbacks(self, on_discovered: Callable = None, on_lost: Callable = None, on_collision: Callable = None):
+    def set_callbacks(
+        self,
+        on_discovered: Callable = None,
+        on_lost: Callable = None,
+        on_collision: Callable = None,
+        on_collision_regenerate: Callable = None
+    ):
         """
         Configura callbacks para eventos de descubrimiento.
 
@@ -355,7 +507,9 @@ class NodeDiscovery:
             on_discovered: Callback cuando se descubre nuevo nodo (node_id, host, tcp_port, udp_port)
             on_lost: Callback cuando se pierde un nodo (node_id)
             on_collision: Callback cuando se detecta colisión de ID (conflicting_node_id, conflicting_host)
+            on_collision_regenerate: Callback para regenerar ID cuando este nodo debe ceder (sin args)
         """
         self.on_node_discovered = on_discovered
         self.on_node_lost = on_lost
         self.on_id_collision = on_collision
+        self.on_collision_regenerate = on_collision_regenerate

@@ -60,6 +60,33 @@ class Config:
     CLUSTER_MODE = os.getenv('CLUSTER_MODE', 'dynamic')
 
     # ========================================================================
+    # CONFIGURACIÓN OPCIONAL PARA VMs (todo auto-detectado por defecto)
+    # ========================================================================
+
+    # IP local explícita (solo si auto-detección falla)
+    # Ejemplo: BIND_IP=192.168.1.101
+    BIND_IP = os.getenv('BIND_IP', None)
+
+    # Interfaz de red específica (solo si hay múltiples interfaces)
+    # Ejemplo: NETWORK_INTERFACE=eth0
+    NETWORK_INTERFACE = os.getenv('NETWORK_INTERFACE', None)
+
+    # TTL para paquetes multicast (aumentado para redes más complejas)
+    MULTICAST_TTL = int(os.getenv('MULTICAST_TTL', '4'))
+
+    # Habilitar broadcast UDP como fallback si multicast no funciona
+    USE_BROADCAST_FALLBACK = os.getenv('USE_BROADCAST_FALLBACK', 'true').lower() == 'true'
+
+    # Timeout de elección de líder (segundos sin heartbeat para iniciar elección)
+    ELECTION_TIMEOUT = int(os.getenv('ELECTION_TIMEOUT', '10'))
+
+    # Intervalo de heartbeat del líder (segundos)
+    BULLY_HEARTBEAT_INTERVAL = int(os.getenv('HEARTBEAT_INTERVAL', '3'))
+
+    # TCP backlog (conexiones pendientes en cola)
+    TCP_BACKLOG = int(os.getenv('TCP_BACKLOG', '20'))
+
+    # ========================================================================
     # CONFIGURACIÓN ESTÁTICA (Solo para modo CLUSTER_MODE='static')
     # ========================================================================
 

@@ -68,9 +68,10 @@ class BullyNode:
         self.election_in_progress = False
         self.current_term = 0  # Term number para invalidar mensajes obsoletos
 
-        # Configuración de timeouts
-        self.heartbeat_interval = 3   # Enviar heartbeat cada 3s
-        self.election_timeout = 10     # Sin heartbeat por 10s → elección
+        # Configuración de timeouts (configurable via Config)
+        from config import Config
+        self.heartbeat_interval = getattr(Config, 'BULLY_HEARTBEAT_INTERVAL', 3)
+        self.election_timeout = getattr(Config, 'ELECTION_TIMEOUT', 10)
         self.last_heartbeat_received = time.time()
 
         # Tracking de nodos activos (para validación inteligente)
@@ -117,20 +118,26 @@ class BullyNode:
 
         # Iniciar discovery si estamos en modo dinámico
         if self.use_discovery:
+            from config import Config
+
             self.discovery = NodeDiscovery(
                 node_id=self.node_id,
                 tcp_port=self.tcp_port,
                 udp_port=self.udp_port,
                 multicast_group=self.multicast_group,
                 multicast_port=self.multicast_port,
-                announce_interval=5,
-                node_timeout=15
+                announce_interval=getattr(Config, 'DISCOVERY_ANNOUNCE_INTERVAL', 5),
+                node_timeout=getattr(Config, 'DISCOVERY_NODE_TIMEOUT', 15),
+                # Nuevos parámetros para VMs
+                use_broadcast_fallback=getattr(Config, 'USE_BROADCAST_FALLBACK', True),
+                multicast_ttl=getattr(Config, 'MULTICAST_TTL', 4)
             )
 
-            # Configurar callbacks para descubrimiento de nodos
+            # Configurar callbacks para descubrimiento de nodos y colisiones
             self.discovery.set_callbacks(
                 on_discovered=self._on_node_discovered,
-                on_lost=self._on_node_lost
+                on_lost=self._on_node_lost,
+                on_collision_regenerate=self._on_collision_regenerate
             )
 
             self.discovery.start()
@@ -603,6 +610,73 @@ class BullyNode:
             logger.warning(f"[Node-{self.node_id}] [DYNAMIC] Lost leader node {node_id}, starting election")
             if not self.election_in_progress:
                 threading.Thread(target=self.start_election, daemon=True).start()
+
+    def _on_collision_regenerate(self):
+        """
+        Callback cuando se detecta colisión de ID y este nodo debe regenerar.
+
+        Este método se llama cuando otro nodo tiene el mismo NODE_ID
+        y este nodo tiene IP menor (debe ceder el ID).
+
+        El proceso:
+        1. Detener servicios actuales
+        2. Liberar lock del NODE_ID actual
+        3. Generar nuevo NODE_ID
+        4. Actualizar configuración
+        5. Reiniciar con nuevo ID
+        """
+        logger.warning(f"[Node-{self.node_id}] [COLLISION] Regenerating NODE_ID due to collision...")
+
+        old_id = self.node_id
+
+        try:
+            # 1. Detener servicios
+            logger.info(f"[Node-{old_id}] [COLLISION] Stopping services...")
+            self.stop()
+
+            # 2. Liberar lock del NODE_ID actual
+            from bully.id_generator import release_node_id_lock, clear_persistent_id, get_or_create_node_id
+            release_node_id_lock(old_id)
+            clear_persistent_id()
+
+            # 3. Generar nuevo NODE_ID
+            logger.info(f"[Node-{old_id}] [COLLISION] Generating new NODE_ID...")
+            new_id = get_or_create_node_id(force_new=True)
+
+            if new_id == old_id:
+                # Si obtuvimos el mismo ID, forzar uno diferente
+                new_id = get_or_create_node_id(force_new=True)
+
+            logger.info(f"[COLLISION] New NODE_ID generated: {new_id} (was {old_id})")
+
+            # 4. Actualizar configuración
+            from config import Config
+            Config.NODE_ID = new_id
+            Config.TCP_PORT = 5555 + (new_id % 1000)
+            Config.UDP_PORT = 6000 + (new_id % 1000)
+
+            # 5. Actualizar atributos del nodo
+            self.node_id = new_id
+            self.tcp_port = Config.TCP_PORT
+            self.udp_port = Config.UDP_PORT
+
+            # Recrear communication manager con nuevos puertos
+            self.comm = CommunicationManager(new_id, self.tcp_port, self.udp_port)
+
+            # 6. Esperar un poco para que el otro nodo estabilice
+            logger.info(f"[Node-{new_id}] [COLLISION] Waiting 3s before restart...")
+            time.sleep(3)
+
+            # 7. Reiniciar
+            logger.info(f"[Node-{new_id}] [COLLISION] Restarting with new ID...")
+            self.start()
+
+            logger.info(f"[Node-{new_id}] [COLLISION] Successfully restarted with new NODE_ID!")
+
+        except Exception as e:
+            logger.error(f"[COLLISION] Failed to regenerate NODE_ID: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     def add_node(self, node_id: int, host: str, tcp_port: int, udp_port: int):
         """

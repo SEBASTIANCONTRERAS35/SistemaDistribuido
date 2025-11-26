@@ -91,12 +91,19 @@ class CommunicationManager:
             self.udp_socket.close()
     
     def _tcp_server_loop(self):
-        """Loop del servidor TCP"""
+        """Loop del servidor TCP con backlog configurable."""
+        from config import Config
+
         self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.tcp_socket.bind(('0.0.0.0', self.tcp_port))
-        self.tcp_socket.listen(5)
+
+        # Backlog configurable (default 20, antes era 5)
+        backlog = getattr(Config, 'TCP_BACKLOG', 20)
+        self.tcp_socket.listen(backlog)
         self.tcp_socket.settimeout(1.0)
+
+        logger.info(f"[Node-{self.node_id}] [COMM-TCP] Listening on 0.0.0.0:{self.tcp_port} (backlog={backlog})")
         
         while self.running:
             try:
