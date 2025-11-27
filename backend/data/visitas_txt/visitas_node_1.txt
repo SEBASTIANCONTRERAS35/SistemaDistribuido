@@ -56,3 +56,264 @@ Usuario: social1
 Timestamp: 2025-11-27 04:29:00.220891
 
 
+======================================================================
+VISITA DE EMERGENCIA - 2025-11-27 11:43:53
+======================================================================
+Folio: P9-D7-S3-0001
+ID Visita: 3
+Estado: ACTIVA
+
+--- PACIENTE ---
+ID: 9
+Nombre: Jose
+Edad: 34 años
+Sexo: M
+CURP: N/A
+
+--- ASIGNACIÓN ---
+Sala: 3
+Doctor: Dr. Ricardo Mendiola S3 (Medicina General)
+Cama: #301
+
+--- CLÍNICO ---
+Síntomas: fdsfdsfdsfdsfdsfdsfdsfdsf
+Diagnóstico: (pendiente)
+
+--- METADATA ---
+Nodo creador: 1
+Usuario: social1
+Timestamp: 2025-11-27 17:43:53.382313
+
+
+======================================================================
+VISITA DE EMERGENCIA - 2025-11-27 11:45:22
+======================================================================
+Folio: P10-D10-S4-0001
+ID Visita: 4
+Estado: ACTIVA
+
+--- PACIENTE ---
+ID: 10
+Nombre: rosalba
+Edad: 34 años
+Sexo: M
+CURP: N/A
+
+--- ASIGNACIÓN ---
+Sala: 4
+Doctor: Dr. Ricardo Mendiola S4 (Medicina General)
+Cama: #401
+
+--- CLÍNICO ---
+Síntomas: dfdsfdsfdsfdsfdsfdsfdsfs
+Diagnóstico: (pendiente)
+
+--- METADATA ---
+Nodo creador: 1
+Usuario: social1
+Timestamp: 2025-11-27 17:45:22.665844
+
+
+======================================================================
+VISITA DE EMERGENCIA - 2025-11-27 11:48:17
+======================================================================
+Folio: P11-D2-S1-0001
+ID Visita: 5
+Estado: ACTIVA
+
+--- PACIENTE ---
+ID: 11
+Nombre: asd
+Edad: 43 años
+Sexo: M
+CURP: N/A
+
+--- ASIGNACIÓN ---
+Sala: 1
+Doctor: Dra. Elena Vázquez S1 (Urgencias)
+Cama: #102
+
+--- CLÍNICO ---
+Síntomas: adasdasdsdasdsad
+Diagnóstico: (pendiente)
+
+--- METADATA ---
+Nodo creador: 1
+Usuario: social1
+Timestamp: 2025-11-27 17:48:17.750248
+
+
+======================================================================
+VISITA DE EMERGENCIA - 2025-11-27 11:48:35
+======================================================================
+Folio: P12-D5-S2-0001
+ID Visita: 6
+Estado: ACTIVA
+
+--- PACIENTE ---
+ID: 12
+Nombre: dfdsfsdfdsf
+Edad: 43 años
+Sexo: M
+CURP: N/A
+
+--- ASIGNACIÓN ---
+Sala: 2
+Doctor: Dra. Elena Vázquez S2 (Urgencias)
+Cama: #202
+
+--- CLÍNICO ---
+Síntomas: dsfdsfdsfdsfsdfdsfsf
+Diagnóstico: (pendiente)
+
+--- METADATA ---
+Nodo creador: 1
+Usuario: social1
+Timestamp: 2025-11-27 17:48:35.823788
+
+
+======================================================================
+VISITA DE EMERGENCIA - 2025-11-27 11:48:56
+======================================================================
+Folio: P13-D8-S3-0002
+ID Visita: 7
+Estado: ACTIVA
+
+--- PACIENTE ---
+ID: 13
+Nombre: arturo
+Edad: 34 años
+Sexo: M
+CURP: N/A
+
+--- ASIGNACIÓN ---
+Sala: 3
+Doctor: Dra. Elena Vázquez S3 (Urgencias)
+Cama: #302
+
+--- CLÍNICO ---
+Síntomas: sdfdsfdsfdsfdsfdsfdsfsdf
+Diagnóstico: (pendiente)
+
+--- METADATA ---
+Nodo creador: 1
+Usuario: social1
+Timestamp: 2025-11-27 17:48:56.541273
+
+
+======================================================================
+VISITA DE EMERGENCIA - 2025-11-27 12:49:39
+======================================================================
+Folio: P14-D1-S1-0001
+ID Visita: 1
+Estado: ACTIVA
+
+--- PACIENTE ---
+ID: 14
+Nombre: hola
+Edad: 23 años
+Sexo: M
+CURP: N/A
+
+--- ASIGNACIÓN ---
+Sala: 1
+Doctor: Dr. Ricardo Mendiola S1 (Medicina General)
+Cama: #101
+
+--- CLÍNICO ---
+Síntomas: dfdsfdsfdsfdsfdsf
+Diagnóstico: (pendiente)
+
+--- METADATA ---
+Nodo creador: 1
+Usuario: social1
+Timestamp: 2025-11-27 18:49:39.809728
+
+
+======================================================================
+VISITA DE EMERGENCIA - 2025-11-27 12:50:10
+======================================================================
+Folio: P15-D4-S2-0001
+ID Visita: 2
+Estado: ACTIVA
+
+--- PACIENTE ---
+ID: 15
+Nombre: hola
+Edad: 23 años
+Sexo: M
+CURP: N/A
+
+--- ASIGNACIÓN ---
+Sala: 2
+Doctor: Dr. Ricardo Mendiola S2 (Medicina General)
+Cama: #201
+
+--- CLÍNICO ---
+Síntomas: esfdsfdsfdsfdsfdsfdsf
+Diagnóstico: (pendiente)
+
+--- METADATA ---
+Nodo creador: 1
+Usuario: social1
+Timestamp: 2025-11-27 18:50:10.022664
+
+
+======================================================================
+VISITA DE EMERGENCIA - 2025-11-27 12:52:42
+======================================================================
+Folio: P16-D7-S3-0001
+ID Visita: 3
+Estado: ACTIVA
+
+--- PACIENTE ---
+ID: 16
+Nombre: dfdsfsdfdsfs
+Edad: 34 años
+Sexo: M
+CURP: N/A
+
+--- ASIGNACIÓN ---
+Sala: 3
+Doctor: Dr. Ricardo Mendiola S3 (Medicina General)
+Cama: #301
+
+--- CLÍNICO ---
+Síntomas: dsfdsfdsfdsfdsfdsfdsf
+Diagnóstico: (pendiente)
+
+--- METADATA ---
+Nodo creador: 1
+Usuario: social1
+Timestamp: 2025-11-27 18:52:42.932375
+
+
+======================================================================
+VISITA DE EMERGENCIA - 2025-11-27 13:31:23
+======================================================================
+Folio: P17-D10-S4-0001
+ID Visita: 4
+Estado: ACTIVA
+
+--- PACIENTE ---
+ID: 17
+Nombre: emma
+Edad: 31 años
+Sexo: M
+CURP: N/A
+
+--- ASIGNACIÓN ---
+Sala: 4
+Doctor: Dr. Ricardo Mendiola S4 (Medicina General)
+Cama: #401
+
+--- CLÍNICO ---
+Síntomas: asdasdasdasdasdasdasdsadsadas
+Diagnóstico: (pendiente)
+
+--- METADATA ---
+Nodo creador: 1
+Usuario: social1
+Timestamp: 2025-11-27 19:31:23.672990
+
+

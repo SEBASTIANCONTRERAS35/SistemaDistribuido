@@ -363,17 +363,14 @@ class SimpleCreateVisitScreen(ModalScreen):
                 logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paso 5: Iniciando Two-Phase Commit...")
                 coordinator = TwoPhaseCommitCoordinator(self.bully_manager, self.flask_app)
 
-                # PRE-GENERAR FOLIO UNICO (garantiza unicidad global en cluster)
-                # Formato: EMG-{YYYYMMDD}-{NODE_ID}-{UUID6}
-                import uuid
-                fecha_str = datetime.utcnow().strftime('%Y%m%d')
-                unique_id = uuid.uuid4().hex[:6].upper()
-                folio = f"EMG-{fecha_str}-{node_id}-{unique_id}"
-                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Folio pre-generado: {folio}")
+                # FOLIO: Se genera automaticamente en before_insert con formato:
+                # P{id_paciente}-D{id_doctor}-S{id_sala}-{consecutivo:04d}
+                # Ejemplo: P15-D3-S1-0001
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Folio se generara en commit con formato P-D-S-CONS")
 
-                # Datos para la transaccion (incluye folio pre-generado)
+                # Datos para la transaccion (folio=None, se genera en insert)
                 txn_data = {
-                    'folio': folio,  # FOLIO PRE-GENERADO para evitar colisiones
+                    'folio': None,  # Se genera automaticamente en before_insert
                     'doctor_id': doctor.id_doctor,
                     'cama_id': cama.id_cama,
                     'sala_id': sala_destino,

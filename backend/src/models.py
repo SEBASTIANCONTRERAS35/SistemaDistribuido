@@ -372,19 +372,17 @@ from sqlalchemy import event
 def generate_folio(mapper, connection, target):
     """
     Genera el folio automáticamente antes de insertar la visita.
-    Formato: EMG-{YYYYMMDD}-{CONSECUTIVO:04d}
-    Ejemplo: EMG-20251126-0001
 
-    Nota: No incluye sala porque puede cambiar por redistribución.
+    Formato requerido: IDPACIENTE+IDDOCTOR+SALADEEMERGENCIA+IDconsecutivoVISITA
+    Formato implementado: P{id_paciente}-D{id_doctor}-S{id_sala}-{consecutivo:04d}
+    Ejemplo: P15-D3-S1-0001
     """
     if not target.folio:
-        from datetime import datetime
-        # Usar consecutivo global (sala=0 para consecutivo general)
-        consecutivo = get_next_consecutivo(id_sala=0)
+        # Usar consecutivo por sala (para unicidad dentro de cada sala)
+        consecutivo = get_next_consecutivo(id_sala=target.id_sala)
 
-        # Generar folio con fecha del día
-        fecha_str = datetime.utcnow().strftime('%Y%m%d')
-        target.folio = f"EMG-{fecha_str}-{consecutivo:04d}"
+        # Generar folio con formato: P{paciente}-D{doctor}-S{sala}-{consecutivo}
+        target.folio = f"P{target.id_paciente}-D{target.id_doctor}-S{target.id_sala}-{consecutivo:04d}"
 
 
 # ============================================================================

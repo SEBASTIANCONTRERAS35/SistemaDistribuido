@@ -410,9 +410,10 @@ class TwoPhaseCommitCoordinator:
         cama.ocupada = True
         cama.id_paciente = paciente.id_paciente
 
-        # Crear visita (usar folio pre-generado si existe)
+        # Crear visita (folio=None, se genera en before_insert)
+        # Formato generado: P{id_paciente}-D{id_doctor}-S{id_sala}-{consecutivo:04d}
         visita = VisitaEmergencia(
-            folio=data.get('folio'),  # FOLIO PRE-GENERADO por coordinador
+            folio=None,  # Se genera automaticamente en before_insert
             id_paciente=paciente.id_paciente,
             id_doctor=doctor.id_doctor,
             id_cama=cama.id_cama,
@@ -654,12 +655,16 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
 
             if operation == 'CREATE_VISIT':
                 # Verificar si la visita ya existe (BD compartida - coordinador ya la creó)
-                folio_from_coordinator = txn_data.get('folio')
-                existing_visit = VisitaEmergencia.query.filter_by(folio=folio_from_coordinator).first()
+                # Buscar por doctor_id + cama_id + estado='activa' (folio ahora es None hasta insert)
+                existing_visit = VisitaEmergencia.query.filter_by(
+                    id_doctor=txn_data['doctor_id'],
+                    id_cama=txn_data['cama_id'],
+                    estado='activa'
+                ).first()
 
                 if existing_visit:
                     # BD compartida - el coordinador ya insertó la visita
-                    logger.warning(f"[2PC-COMMIT] Visita {folio_from_coordinator} ya existe (BD compartida), ACK directo")
+                    logger.warning(f"[2PC-COMMIT] Visita ya existe: {existing_visit.folio} (BD compartida), ACK directo")
                     remove_pending_txn(txn_id)
                     return Message(
                         type=TWO_PC_RESPONSE,
@@ -669,7 +674,7 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                     )
 
                 # BD separada - hacer INSERT normal
-                logger.warning(f"[2PC-COMMIT] Participante creando visita con folio: {folio_from_coordinator}")
+                logger.warning(f"[2PC-COMMIT] Participante creando visita (folio se genera en insert)")
 
                 doctor = Doctor.query.get(txn_data['doctor_id'])
                 cama = Cama.query.get(txn_data['cama_id'])
@@ -700,8 +705,10 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                     cama.ocupada = True
                     cama.id_paciente = paciente.id_paciente
 
+                # Crear visita (folio=None, se genera en before_insert)
+                # Formato: P{id_paciente}-D{id_doctor}-S{id_sala}-{consecutivo:04d}
                 visita = VisitaEmergencia(
-                    folio=folio_from_coordinator,
+                    folio=None,  # Se genera automaticamente en before_insert
                     id_paciente=paciente.id_paciente,
                     id_doctor=txn_data['doctor_id'],
                     id_cama=txn_data['cama_id'],

@@ -619,6 +619,17 @@ class BullyNode:
             if not self.election_in_progress:
                 threading.Thread(target=self.start_election, daemon=True).start()
 
+        # REDISTRIBUCION: Si YO soy el líder, redistribuir visitas del nodo perdido
+        if self.state == NodeState.LEADER and self.flask_app:
+            logger.warning(f"[Node-{self.node_id}] [REDISTRIBUTION] Soy líder, iniciando redistribución de visitas de nodo {node_id}")
+            from bully.visit_redistribution import VisitRedistributor
+            redistributor = VisitRedistributor(self.flask_app, self)
+            threading.Thread(
+                target=redistributor.redistribute_visits_from_node,
+                args=(node_id,),
+                daemon=True
+            ).start()
+
     def _on_collision_regenerate(self):
         """
         Callback cuando se detecta colisión de ID y este nodo debe regenerar.
