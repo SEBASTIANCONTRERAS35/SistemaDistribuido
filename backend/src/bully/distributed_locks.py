@@ -114,7 +114,7 @@ def solicitar_bloqueo_distribuido(
     flask_app,
     recurso_tipo: str,
     recurso_id: int,
-    timeout: float = 3.0
+    timeout: float = 10.0
 ) -> bool:
     """
     Solicita bloqueo distribuido sobre un recurso.
@@ -370,7 +370,7 @@ def propagar_transaccion_con_consenso(
     bully_node,
     flask_app,
     comando: Dict[str, Any],
-    timeout: float = 3.0
+    timeout: float = 10.0
 ) -> bool:
     """
     Propaga una transaccion con consenso por MAYORIA.
@@ -651,6 +651,161 @@ def replicar_cierre_con_consenso(bully_node, flask_app, folio: str) -> bool:
 
 
 # ============================================================================
+# FUNCIONES DE BLOQUEO MEJORADAS (2PC SUPPORT)
+# ============================================================================
+
+
+def liberar_bloqueo_distribuido_con_retry(
+    bully_node,
+    recurso_tipo: str,
+    recurso_id: int,
+    max_retries: int = 3,
+    base_delay: float = 1.0
+) -> bool:
+    """
+    Libera bloqueo distribuido con reintentos exponenciales.
+
+    A diferencia de liberar_bloqueo_distribuido que es fire-and-forget,
+    esta función reintenta la liberación hasta tener éxito.
+
+    Args:
+        bully_node: Instancia de BullyNode
+        recurso_tipo: 'DOCTOR' o 'CAMA'
+        recurso_id: ID del recurso
+        max_retries: Número máximo de reintentos
+        base_delay: Delay base para backoff exponencial
+
+    Returns:
+        True si se liberó exitosamente
+    """
+    for attempt in range(max_retries):
+        try:
+            # Primero liberar localmente
+            desbloquear_localmente(recurso_tipo, recurso_id)
+
+            # Luego notificar a otros nodos
+            from bully.communication import Message
+
+            otros_nodos = {k: v for k, v in bully_node.cluster_nodes.items()
+                          if k != bully_node.node_id}
+
+            if not otros_nodos:
+                logger.info(f"[LOCK-RETRY] Released {recurso_tipo}_{recurso_id} (no other nodes)")
+                return True
+
+            msg = Message(
+                type=UNLOCK_REQUEST,
+                sender_id=bully_node.node_id,
+                timestamp=time.time(),
+                data={
+                    'recurso_tipo': recurso_tipo,
+                    'recurso_id': recurso_id
+                }
+            )
+
+            success_count = 0
+            for node_id, (ip, tcp_port, udp_port) in otros_nodos.items():
+                try:
+                    response = bully_node.comm.send_tcp(ip, tcp_port, msg, timeout=2.0)
+                    if response and response.data and response.data.get('released'):
+                        success_count += 1
+                except:
+                    pass
+
+            if success_count == len(otros_nodos):
+                logger.info(f"[LOCK-RETRY] Released {recurso_tipo}_{recurso_id} on all nodes")
+                return True
+
+            if success_count > 0:
+                # Al menos algunos nodos liberaron - considerar éxito parcial
+                logger.warning(f"[LOCK-RETRY] Partial release {recurso_tipo}_{recurso_id}: {success_count}/{len(otros_nodos)}")
+                return True
+
+        except Exception as e:
+            logger.warning(f"[LOCK-RETRY] Attempt {attempt+1} failed for {recurso_tipo}_{recurso_id}: {e}")
+
+        # Esperar con backoff exponencial
+        delay = base_delay * (2 ** attempt)
+        time.sleep(delay)
+
+    logger.error(f"[LOCK-RETRY] Failed after {max_retries} attempts for {recurso_tipo}:{recurso_id}")
+    return False
+
+
+def solicitar_bloqueo_con_orden(
+    bully_node,
+    flask_app,
+    recursos: list,  # [('DOCTOR', 1), ('CAMA', 5)]
+    timeout: float = 10.0
+) -> tuple:
+    """
+    Solicita múltiples bloqueos en orden determinístico para evitar deadlocks.
+
+    Los recursos se ordenan alfabéticamente por (tipo, id) para garantizar
+    que todos los nodos adquieran locks en el mismo orden.
+
+    Protocol:
+    1. Ordenar recursos por (tipo, id)
+    2. Adquirir locks secuencialmente
+    3. Si alguno falla -> rollback de los ya adquiridos
+    4. Retornar lista de recursos bloqueados
+
+    Args:
+        bully_node: Instancia de BullyNode
+        flask_app: Aplicación Flask
+        recursos: Lista de tuplas [(tipo, id), ...]
+        timeout: Timeout por bloqueo
+
+    Returns:
+        (success: bool, locked_resources: list)
+    """
+    if not recursos:
+        return (True, [])
+
+    # Ordenar recursos para evitar deadlock (orden global)
+    recursos_ordenados = sorted(recursos, key=lambda x: (x[0], x[1]))
+    locked = []
+
+    logger.info(f"[LOCK-ORDER] Requesting locks in order: {recursos_ordenados}")
+
+    for recurso_tipo, recurso_id in recursos_ordenados:
+        if solicitar_bloqueo_distribuido(
+            bully_node, flask_app, recurso_tipo, recurso_id, timeout=timeout
+        ):
+            locked.append((recurso_tipo, recurso_id))
+            logger.info(f"[LOCK-ORDER] Acquired lock: {recurso_tipo}_{recurso_id}")
+        else:
+            # Rollback: liberar los que ya se bloquearon (en orden inverso)
+            logger.warning(f"[LOCK-ORDER] Failed to acquire {recurso_tipo}_{recurso_id}, rolling back {len(locked)} locks")
+            for tipo, rid in reversed(locked):
+                liberar_bloqueo_distribuido_con_retry(bully_node, tipo, rid)
+            return (False, [])
+
+    logger.info(f"[LOCK-ORDER] All {len(locked)} locks acquired successfully")
+    return (True, locked)
+
+
+def liberar_todos_bloqueos(
+    bully_node,
+    recursos: list  # [('DOCTOR', 1), ('CAMA', 5)]
+) -> None:
+    """
+    Libera múltiples bloqueos con retry.
+
+    Útil para cleanup en finally blocks.
+
+    Args:
+        bully_node: Instancia de BullyNode
+        recursos: Lista de tuplas [(tipo, id), ...]
+    """
+    for recurso_tipo, recurso_id in recursos:
+        try:
+            liberar_bloqueo_distribuido_con_retry(bully_node, recurso_tipo, recurso_id)
+        except Exception as e:
+            logger.error(f"[LOCK-CLEANUP] Error releasing {recurso_tipo}_{recurso_id}: {e}")
+
+
+# ============================================================================
 # EXPORTS
 # ============================================================================
 
@@ -661,9 +816,13 @@ __all__ = [
     'UNLOCK_REQUEST',
     'CONSENSUS_REQUEST',
     'CONSENSUS_RESPONSE',
-    # Funciones de bloqueo
+    # Funciones de bloqueo básicas
     'solicitar_bloqueo_distribuido',
     'liberar_bloqueo_distribuido',
+    # Funciones de bloqueo mejoradas (2PC)
+    'liberar_bloqueo_distribuido_con_retry',
+    'solicitar_bloqueo_con_orden',
+    'liberar_todos_bloqueos',
     # Handlers
     'handle_lock_request',
     'handle_unlock_request',

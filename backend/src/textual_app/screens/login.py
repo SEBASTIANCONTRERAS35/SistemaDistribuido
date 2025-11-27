@@ -196,10 +196,10 @@ class LoginScreen(Screen):
                     )
                 )
             else:
-                # Doctor -> Direct to Visitas screen
-                from .visitas import VisitasScreen
+                # Doctor -> DoctorDashboard with read-only views
+                from .doctor_dashboard import DoctorDashboard
                 self.app.push_screen(
-                    VisitasScreen(
+                    DoctorDashboard(
                         self.flask_app,
                         self.bully_manager,
                         username,

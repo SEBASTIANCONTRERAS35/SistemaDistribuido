@@ -100,7 +100,8 @@ def get_user_info(user):
         'id': user.id,
         'username': user.username,
         'rol': user.rol,
-        'rol_display': get_rol_display(user.rol)
+        'rol_display': get_rol_display(user.rol),
+        'id_relacionado': user.id_relacionado  # CRITICAL: ID del doctor/trabajador para permisos
     }
 
     if user.rol == 'doctor' and user.id_relacionado:

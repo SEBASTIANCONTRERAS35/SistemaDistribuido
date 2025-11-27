@@ -750,7 +750,7 @@ class BullyNode:
 
     def _register_lock_handlers(self):
         """
-        Registra handlers para mensajes de bloqueo distribuido y consenso.
+        Registra handlers para mensajes de bloqueo distribuido, consenso y 2PC.
         Requiere que self.flask_app esté configurado.
         """
         from bully.distributed_locks import (
@@ -760,6 +760,10 @@ class BullyNode:
             LOCK_REQUEST,
             UNLOCK_REQUEST,
             CONSENSUS_REQUEST
+        )
+        from bully.two_phase_commit import (
+            handle_2pc_request,
+            TWO_PC_REQUEST
         )
 
         # Crear wrappers que pasan flask_app y node_id
@@ -772,12 +776,16 @@ class BullyNode:
         def consensus_handler(msg):
             return handle_consensus_request(msg, self.flask_app, self.node_id)
 
+        def two_pc_handler(msg):
+            return handle_2pc_request(msg, self.flask_app, self.node_id)
+
         # Registrar handlers TCP
         self.comm.register_tcp_handler(LOCK_REQUEST, lock_handler)
         self.comm.register_tcp_handler(UNLOCK_REQUEST, unlock_handler)
         self.comm.register_tcp_handler(CONSENSUS_REQUEST, consensus_handler)
+        self.comm.register_tcp_handler(TWO_PC_REQUEST, two_pc_handler)
 
-        logger.info(f"[Node-{self.node_id}] [LOCKS] Handlers registered: LOCK_REQUEST, UNLOCK_REQUEST, CONSENSUS_REQUEST")
+        logger.info(f"[Node-{self.node_id}] [LOCKS] Handlers registered: LOCK_REQUEST, UNLOCK_REQUEST, CONSENSUS_REQUEST, TWO_PC_REQUEST")
 
     def set_flask_app(self, flask_app):
         """

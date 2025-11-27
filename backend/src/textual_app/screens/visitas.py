@@ -160,14 +160,20 @@ class VisitasScreen(Screen):
                 placeholder="🔍 Buscar por folio, paciente o doctor...",
                 id="search-input"
             )
+            # Build filter options based on role
+            filter_options = [
+                ("Todas", "todas"),
+                ("Activas", "activa"),
+                ("Completadas", "completada"),
+                ("Canceladas", "cancelada"),
+            ]
+            # Add "Mis Visitas" option for doctors
+            if rol == 'doctor':
+                filter_options.insert(1, ("Mis Visitas", "mis_visitas"))
+
             yield Select(
-                options=[
-                    ("Todas", "todas"),
-                    ("Activas", "activa"),
-                    ("Completadas", "completada"),
-                    ("Canceladas", "cancelada"),
-                ],
-                value="todas",
+                options=filter_options,
+                value="mis_visitas" if rol == 'doctor' else "todas",
                 id="filter-select",
                 allow_blank=False
             )
@@ -257,7 +263,12 @@ class VisitasScreen(Screen):
         filtered = self.visitas_data.copy()
 
         # Apply estado filter
-        if self.filter_estado != "todas":
+        if self.filter_estado == "mis_visitas":
+            # Filter by doctor's assigned visits (only for doctors)
+            doctor_id = self.user_info.get('id_relacionado')
+            if doctor_id:
+                filtered = [v for v in filtered if v.get('id_doctor') == doctor_id]
+        elif self.filter_estado != "todas":
             filtered = [v for v in filtered if v.get('estado') == self.filter_estado]
 
         # Apply search query

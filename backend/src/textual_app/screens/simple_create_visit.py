@@ -259,58 +259,61 @@ class SimpleCreateVisitScreen(ModalScreen):
         sintomas: str
     ) -> Dict[str, Any]:
         """
-        Create visit in database with distributed locks (exclusion mutua).
+        Create visit in database using Two-Phase Commit (2PC) protocol.
 
         Protocol:
-        1. Get available resources (doctor, cama)
-        2. Acquire distributed lock on doctor (all nodes must approve)
-        3. Acquire distributed lock on cama (all nodes must approve)
-        4. If any lock fails, release acquired locks and abort
-        5. Create patient and visit
-        6. Mark resources as occupied in DB
-        7. Release distributed locks
+        1. Get available resources (doctor, cama) from best sala
+        2. Acquire distributed locks on both resources (ordered to prevent deadlock)
+        3. Begin 2PC transaction
+        4. Execute 2PC: PREPARE -> COMMIT (if all YES) or ABORT (if any NO/timeout)
+        5. Release distributed locks with retry
+        6. Return result
+
+        Guarantees:
+        - ATOMIC: Either all nodes commit or all abort
+        - CONSISTENT: No partial commits possible
+        - CP (CAP): Rejects operation if consensus cannot be reached
         """
         with self.flask_app.app_context():
             from models import (
-                db, VisitaEmergencia, Paciente, Doctor, Cama,
+                db, Paciente, Doctor, Cama,
                 get_doctores_disponibles, get_camas_disponibles,
                 elegir_sala_menos_carga
             )
             from bully.distributed_locks import (
-                solicitar_bloqueo_distribuido,
-                liberar_bloqueo_distribuido,
-                replicar_asignacion_con_consenso
+                solicitar_bloqueo_con_orden,
+                liberar_todos_bloqueos
             )
+            from bully.two_phase_commit import TwoPhaseCommitCoordinator
             import logging
             logger = logging.getLogger(__name__)
 
+            locked_resources = []
             doctor = None
             cama = None
-            doctor_locked = False
-            cama_locked = False
 
             try:
                 node_id = self.bully_manager.node_id
                 logger.warning(f"")
                 logger.warning(f"╔══════════════════════════════════════════════════════════════╗")
-                logger.warning(f"║  [Node-{node_id}] INICIANDO CREACION DE VISITA                     ║")
+                logger.warning(f"║  [Node-{node_id}] INICIANDO CREACION DE VISITA (2PC)               ║")
                 logger.warning(f"║  Paciente: {nombre[:30]:<30}                    ║")
                 logger.warning(f"╚══════════════════════════════════════════════════════════════╝")
 
-                # 1. MAESTRO evalúa carga de TODAS las salas y elige la mejor
-                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 1: MAESTRO evaluando carga de todas las salas...")
+                # ====== PASO 1: Seleccionar sala con menor carga ======
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paso 1: Evaluando carga de salas...")
                 sala_destino = elegir_sala_menos_carga()
 
                 if not sala_destino:
-                    logger.error(f"[Node-{node_id}] [VISIT-CREATE] No hay salas con recursos disponibles")
+                    logger.error(f"[Node-{node_id}] [2PC-VISIT] No hay salas con recursos disponibles")
                     return {'success': False, 'error': 'No hay salas con recursos disponibles'}
 
-                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] MAESTRO decidió: Asignar a SALA {sala_destino}")
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Sala elegida: {sala_destino}")
 
-                # 2. Buscar recursos en la sala elegida
+                # ====== PASO 2: Buscar recursos disponibles ======
                 doctores = get_doctores_disponibles(id_sala=sala_destino)
                 camas = get_camas_disponibles(id_sala=sala_destino)
-                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Sala {sala_destino}: {len(doctores)} doctores, {len(camas)} camas disponibles")
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Sala {sala_destino}: {len(doctores)} doctores, {len(camas)} camas")
 
                 if not doctores:
                     return {'success': False, 'error': 'No hay doctores disponibles'}
@@ -318,118 +321,126 @@ class SimpleCreateVisitScreen(ModalScreen):
                 if not camas:
                     return {'success': False, 'error': 'No hay camas disponibles'}
 
-                # 3. Try to lock a doctor (distributed mutual exclusion)
-                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 3: EXCLUSION MUTUA - Bloqueando doctor...")
-                for d in doctores:
-                    logger.warning(f"[Node-{node_id}] [LOCK-REQUEST] Intentando bloquear DOCTOR_{d.id_doctor} ({d.nombre})")
-                    if solicitar_bloqueo_distribuido(
-                        self.bully_manager,
-                        self.flask_app,
-                        'DOCTOR',
-                        d.id_doctor
-                    ):
-                        doctor = d
-                        doctor_locked = True
-                        logger.warning(f"[Node-{node_id}] [LOCK-SUCCESS] ✓ DOCTOR_{d.id_doctor} BLOQUEADO")
-                        break
-                    else:
-                        logger.warning(f"[Node-{node_id}] [LOCK-FAIL] ✗ No se pudo bloquear DOCTOR_{d.id_doctor}")
+                # Seleccionar primer doctor y cama disponibles
+                doctor = doctores[0]
+                cama = camas[0]
 
-                if not doctor:
-                    return {'success': False, 'error': 'No se pudo reservar ningun doctor (recursos ocupados)'}
+                # ====== PASO 3: Adquirir bloqueos distribuidos (orden deterministico) ======
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paso 3: Adquiriendo bloqueos distribuidos...")
+                recursos_a_bloquear = [
+                    ('DOCTOR', doctor.id_doctor),
+                    ('CAMA', cama.id_cama)
+                ]
 
-                # 4. Try to lock a cama (distributed mutual exclusion)
-                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 4: EXCLUSION MUTUA - Bloqueando cama...")
-                for c in camas:
-                    logger.warning(f"[Node-{node_id}] [LOCK-REQUEST] Intentando bloquear CAMA_{c.id_cama} (#{c.numero})")
-                    if solicitar_bloqueo_distribuido(
-                        self.bully_manager,
-                        self.flask_app,
-                        'CAMA',
-                        c.id_cama
-                    ):
-                        cama = c
-                        cama_locked = True
-                        logger.warning(f"[Node-{node_id}] [LOCK-SUCCESS] ✓ CAMA_{c.id_cama} BLOQUEADA")
-                        break
-                    else:
-                        logger.warning(f"[Node-{node_id}] [LOCK-FAIL] ✗ No se pudo bloquear CAMA_{c.id_cama}")
-
-                if not cama:
-                    # Release doctor lock since we couldn't get a cama
-                    liberar_bloqueo_distribuido(self.bully_manager, 'DOCTOR', doctor.id_doctor)
-                    return {'success': False, 'error': 'No se pudo reservar ninguna cama (recursos ocupados)'}
-
-                # 5. Create or find patient
-                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 5: Registrando paciente...")
-                paciente = None
-                if curp:
-                    paciente = Paciente.query.filter_by(curp=curp).first()
-
-                if not paciente:
-                    paciente = Paciente(
-                        nombre=nombre,
-                        edad=edad,
-                        sexo=sexo,
-                        curp=curp if curp else None,
-                        activo=1
-                    )
-                    db.session.add(paciente)
-                    db.session.flush()  # Flush para obtener ID (ahora seguro porque get_next_consecutivo no hace flush)
-                    logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Nuevo paciente creado: ID={paciente.id_paciente}")
-                else:
-                    logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paciente existente: ID={paciente.id_paciente}")
-
-                # 6. Mark resources as occupied in local DB
-                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 6: Marcando recursos como ocupados...")
-                doctor.disponible = False
-                cama.ocupada = True
-                cama.id_paciente = paciente.id_paciente
-
-                # 7. Create visit
-                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 7: Creando visita en BD local (Sala {sala_destino})...")
-                visita = VisitaEmergencia(
-                    id_paciente=paciente.id_paciente,
-                    id_doctor=doctor.id_doctor,
-                    id_cama=cama.id_cama,
-                    id_trabajador=1,  # TODO: Get from session
-                    id_sala=sala_destino,  # Sala elegida por balanceo de carga
-                    sintomas=sintomas,
-                    estado='activa',
-                    timestamp=datetime.utcnow()
-                )
-
-                db.session.add(visita)
-                db.session.commit()
-                db.session.refresh(visita)
-
-                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] ✓ Visita creada localmente: FOLIO={visita.folio}")
-
-                # 7.5. Guardar en archivo TXT (solo desarrollo)
-                self._save_visit_to_txt(visita, paciente, doctor, cama, sala_destino, node_id)
-
-                # 8. Replicate resource assignment to other nodes (consensus)
-                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 8: CONSENSO - Replicando a otros nodos...")
-                replicar_asignacion_con_consenso(
+                success, locked_resources = solicitar_bloqueo_con_orden(
                     self.bully_manager,
                     self.flask_app,
-                    doctor.id_doctor,
-                    cama.id_cama,
-                    paciente.id_paciente
+                    recursos_a_bloquear,
+                    timeout=10.0
                 )
 
-                # 9. Release distributed locks (resources are now marked as occupied in DB)
-                logger.warning(f"[Node-{node_id}] [VISIT-CREATE] Paso 9: Liberando bloqueos distribuidos...")
-                liberar_bloqueo_distribuido(self.bully_manager, 'DOCTOR', doctor.id_doctor)
-                liberar_bloqueo_distribuido(self.bully_manager, 'CAMA', cama.id_cama)
+                if not success:
+                    logger.warning(f"[Node-{node_id}] [2PC-VISIT] No se pudieron adquirir bloqueos")
+                    return {'success': False, 'error': 'No se pudieron reservar recursos (ocupados o timeout)'}
+
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Bloqueos adquiridos: {locked_resources}")
+
+                # ====== PASO 4: Buscar o crear paciente localmente (sin commit) ======
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paso 4: Preparando datos de paciente...")
+                paciente_existente = None
+                paciente_id = None
+
+                if curp:
+                    paciente_existente = Paciente.query.filter_by(curp=curp).first()
+
+                if paciente_existente:
+                    paciente_id = paciente_existente.id_paciente
+                    logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paciente existente: ID={paciente_id}")
+                else:
+                    logger.warning(f"[Node-{node_id}] [2PC-VISIT] Nuevo paciente (se creara en commit)")
+
+                # ====== PASO 5: Iniciar transaccion 2PC ======
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paso 5: Iniciando Two-Phase Commit...")
+                coordinator = TwoPhaseCommitCoordinator(self.bully_manager, self.flask_app)
+
+                # PRE-GENERAR FOLIO UNICO (garantiza unicidad global en cluster)
+                # Formato: EMG-{YYYYMMDD}-{NODE_ID}-{UUID6}
+                import uuid
+                fecha_str = datetime.utcnow().strftime('%Y%m%d')
+                unique_id = uuid.uuid4().hex[:6].upper()
+                folio = f"EMG-{fecha_str}-{node_id}-{unique_id}"
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Folio pre-generado: {folio}")
+
+                # Datos para la transaccion (incluye folio pre-generado)
+                txn_data = {
+                    'folio': folio,  # FOLIO PRE-GENERADO para evitar colisiones
+                    'doctor_id': doctor.id_doctor,
+                    'cama_id': cama.id_cama,
+                    'sala_id': sala_destino,
+                    'paciente_id': paciente_id,
+                    'paciente_nombre': nombre if not paciente_existente else None,
+                    'paciente_edad': edad if not paciente_existente else None,
+                    'paciente_sexo': sexo if not paciente_existente else None,
+                    'trabajador_id': self.user_info.get('id_trabajador', 1),
+                    'sintomas': sintomas
+                }
+
+                txn_id = coordinator.begin_transaction('CREATE_VISIT', txn_data)
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Transaccion iniciada: {txn_id}")
+
+                # ====== PASO 6: Ejecutar protocolo 2PC ======
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paso 6: Ejecutando 2PC (PREPARE -> COMMIT/ABORT)...")
+                result = coordinator.execute_2pc(txn_id)
+
+                if not result['success']:
+                    logger.warning(f"[Node-{node_id}] [2PC-VISIT] 2PC ABORTADO: {result.get('error')}")
+                    # El coordinador ya hizo ABORT, solo liberamos locks
+                    liberar_todos_bloqueos(self.bully_manager, locked_resources)
+                    return {'success': False, 'error': f"Transaccion rechazada: {result.get('error')}"}
+
+                # ====== PASO 7: Obtener datos de la visita creada ======
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] 2PC EXITOSO - Obteniendo datos de visita...")
+                from models import VisitaEmergencia
+
+                # Buscar la visita recien creada (la mas reciente del paciente)
+                if paciente_id:
+                    visita = VisitaEmergencia.query.filter_by(
+                        id_doctor=doctor.id_doctor,
+                        id_cama=cama.id_cama,
+                        estado='activa'
+                    ).order_by(VisitaEmergencia.id_visita.desc()).first()
+                else:
+                    # Nuevo paciente - buscar por doctor y cama
+                    visita = VisitaEmergencia.query.filter_by(
+                        id_doctor=doctor.id_doctor,
+                        id_cama=cama.id_cama,
+                        estado='activa'
+                    ).order_by(VisitaEmergencia.id_visita.desc()).first()
+
+                if not visita:
+                    logger.error(f"[Node-{node_id}] [2PC-VISIT] Visita no encontrada despues de commit")
+                    liberar_todos_bloqueos(self.bully_manager, locked_resources)
+                    return {'success': False, 'error': 'Error interno: visita no encontrada post-commit'}
+
+                # Obtener datos para TXT
+                paciente = Paciente.query.get(visita.id_paciente)
+
+                # ====== PASO 8: Guardar en archivo TXT (desarrollo) ======
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paso 8: Guardando registro TXT...")
+                self._save_visit_to_txt(visita, paciente, doctor, cama, sala_destino, node_id)
+
+                # ====== PASO 9: Liberar bloqueos distribuidos ======
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paso 9: Liberando bloqueos distribuidos...")
+                liberar_todos_bloqueos(self.bully_manager, locked_resources)
 
                 logger.warning(f"")
                 logger.warning(f"╔══════════════════════════════════════════════════════════════╗")
-                logger.warning(f"║  [Node-{node_id}] VISITA CREADA EXITOSAMENTE                       ║")
+                logger.warning(f"║  [Node-{node_id}] VISITA CREADA EXITOSAMENTE (2PC)                  ║")
                 logger.warning(f"║  Folio: {visita.folio:<20}                              ║")
                 logger.warning(f"║  Sala: {sala_destino:<3} (balanceada)                                    ║")
                 logger.warning(f"║  Doctor: {doctor.nombre[:20]:<20}                             ║")
                 logger.warning(f"║  Cama: #{cama.numero:<5}                                            ║")
+                logger.warning(f"║  TXN: {txn_id[:30]:<30}                      ║")
                 logger.warning(f"╚══════════════════════════════════════════════════════════════╝")
 
                 return {
@@ -442,14 +453,11 @@ class SimpleCreateVisitScreen(ModalScreen):
                 }
 
             except Exception as e:
-                db.session.rollback()
-                logger.error(f"[VISIT] Error creating visit: {e}")
+                logger.error(f"[Node-{node_id}] [2PC-VISIT] Exception: {e}")
 
-                # Clean up locks on error
-                if doctor_locked and doctor:
-                    liberar_bloqueo_distribuido(self.bully_manager, 'DOCTOR', doctor.id_doctor)
-                if cama_locked and cama:
-                    liberar_bloqueo_distribuido(self.bully_manager, 'CAMA', cama.id_cama)
+                # Liberar bloqueos en caso de error
+                if locked_resources:
+                    liberar_todos_bloqueos(self.bully_manager, locked_resources)
 
                 return {'success': False, 'error': str(e)}
 

@@ -1,7 +1,7 @@
 """
-Trabajador Social Dashboard - Main navigation hub
-Provides access to all trabajador social features
-Compact design for small terminals (min 1/4 screen height)
+Doctor Dashboard - Main navigation hub for doctors
+Provides read-only access to system resources and ability to close own visits
+Optimized for small terminals (min 1/4 screen height)
 """
 
 from typing import Dict, Any
@@ -13,9 +13,10 @@ from textual.containers import Container, Vertical, Grid
 from textual.binding import Binding
 
 
-class TrabajadorDashboard(Screen):
+class DoctorDashboard(Screen):
     """
-    Dashboard principal para Trabajador Social
+    Dashboard principal para Doctores
+    Provides read-only views and ability to close own visits
     Compact design for small terminals
     """
 
@@ -30,12 +31,12 @@ class TrabajadorDashboard(Screen):
     ]
 
     CSS = """
-    TrabajadorDashboard {
+    DoctorDashboard {
         background: $surface;
     }
 
     #dashboard-header {
-        background: $primary;
+        background: $success;
         color: $surface;
         padding: 0 2;
         dock: top;
@@ -58,7 +59,7 @@ class TrabajadorDashboard(Screen):
         width: 60;
         height: auto;
         background: $panel;
-        border: solid $primary;
+        border: solid $success;
         padding: 1;
         grid-size: 2;
         grid-gutter: 1;
@@ -86,8 +87,8 @@ class TrabajadorDashboard(Screen):
         self.user_info = user_info or {}
 
         # Verificar permisos
-        if self.user_info.get('rol') != 'trabajador_social':
-            self.notify("❌ Acceso denegado: Solo trabajadores sociales", severity="error")
+        if self.user_info.get('rol') != 'doctor':
+            self.notify("Acceso denegado: Solo doctores", severity="error")
 
     def compose(self) -> ComposeResult:
         """Compose the dashboard UI - Compact layout for small terminals"""
@@ -96,19 +97,19 @@ class TrabajadorDashboard(Screen):
         with Container(id="dashboard-header"):
             user_display = self.user_info.get('nombre') or self.username
             node_state = self.bully_manager.state.value.upper()
-            header_text = f"TRABAJADOR SOCIAL | {user_display} | Nodo {self.bully_manager.node_id} ({node_state})"
+            header_text = f"PANEL DEL DOCTOR | {user_display} | Nodo {self.bully_manager.node_id} ({node_state})"
             yield Label(header_text, id="header-title")
 
         # Main container with compact grid menu (2 columns)
         with Container(id="main-container"):
             with Grid(id="menu-grid"):
                 # Row 1
-                yield Button("Visitas", variant="success", id="btn-visitas", classes="menu-button")
-                yield Button("Pacientes", variant="primary", id="btn-pacientes", classes="menu-button")
+                yield Button("Mis Visitas", variant="success", id="btn-visitas", classes="menu-button")
+                yield Button("Camas", variant="primary", id="btn-camas", classes="menu-button")
 
                 # Row 2
                 yield Button("Doctores", variant="primary", id="btn-doctores", classes="menu-button")
-                yield Button("Camas", variant="primary", id="btn-camas", classes="menu-button")
+                yield Button("Pacientes", variant="primary", id="btn-pacientes", classes="menu-button")
 
                 # Row 3
                 yield Button("Trabajadores", variant="primary", id="btn-trabajadores", classes="menu-button")
@@ -123,19 +124,19 @@ class TrabajadorDashboard(Screen):
 
         if button_id == "btn-visitas":
             self.action_visitas()
-        elif button_id == "btn-pacientes":
-            self.action_pacientes()
-        elif button_id == "btn-doctores":
-            self.action_doctores()
         elif button_id == "btn-camas":
             self.action_camas()
+        elif button_id == "btn-doctores":
+            self.action_doctores()
+        elif button_id == "btn-pacientes":
+            self.action_pacientes()
         elif button_id == "btn-trabajadores":
             self.action_trabajadores()
         elif button_id == "btn-logout":
             self.action_logout()
 
     def action_visitas(self) -> None:
-        """Navigate to Visitas screen"""
+        """Navigate to Visitas screen (can close own visits)"""
         from .visitas import VisitasScreen
         self.app.push_screen(
             VisitasScreen(
@@ -146,11 +147,11 @@ class TrabajadorDashboard(Screen):
             )
         )
 
-    def action_pacientes(self) -> None:
-        """Navigate to Pacientes screen"""
-        from .pacientes import PacientesScreen
+    def action_camas(self) -> None:
+        """Navigate to Camas screen (read-only)"""
+        from .estado_camas import EstadoCamasScreen
         self.app.push_screen(
-            PacientesScreen(
+            EstadoCamasScreen(
                 self.flask_app,
                 self.bully_manager,
                 self.username,
@@ -159,10 +160,10 @@ class TrabajadorDashboard(Screen):
         )
 
     def action_doctores(self) -> None:
-        """Navigate to Doctores screen"""
-        from .doctores import DoctoresScreen
+        """Navigate to Doctores screen (read-only)"""
+        from .estado_doctores import EstadoDoctoresScreen
         self.app.push_screen(
-            DoctoresScreen(
+            EstadoDoctoresScreen(
                 self.flask_app,
                 self.bully_manager,
                 self.username,
@@ -170,11 +171,11 @@ class TrabajadorDashboard(Screen):
             )
         )
 
-    def action_camas(self) -> None:
-        """Navigate to Camas screen"""
-        from .camas import CamasScreen
+    def action_pacientes(self) -> None:
+        """Navigate to Pacientes screen (read-only)"""
+        from .lista_pacientes import ListaPacientesScreen
         self.app.push_screen(
-            CamasScreen(
+            ListaPacientesScreen(
                 self.flask_app,
                 self.bully_manager,
                 self.username,
@@ -183,10 +184,10 @@ class TrabajadorDashboard(Screen):
         )
 
     def action_trabajadores(self) -> None:
-        """Navigate to Trabajadores screen"""
-        from .trabajadores import TrabajadoresScreen
+        """Navigate to Trabajadores screen (read-only)"""
+        from .lista_trabajadores import ListaTrabajadoresScreen
         self.app.push_screen(
-            TrabajadoresScreen(
+            ListaTrabajadoresScreen(
                 self.flask_app,
                 self.bully_manager,
                 self.username,
@@ -205,4 +206,4 @@ class TrabajadorDashboard(Screen):
 
 
 # Export
-__all__ = ['TrabajadorDashboard']
+__all__ = ['DoctorDashboard']
