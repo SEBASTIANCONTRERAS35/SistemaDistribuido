@@ -250,14 +250,17 @@ class TwoPhaseCommitCoordinator:
         if not otros_nodos:
             return {'success': True}
 
-        # Enviar COMMIT a todos los nodos
+        # Enviar COMMIT a todos los nodos CON los datos generados por el coordinador
+        # Esto incluye el folio generado para que los participantes usen el mismo
         msg = Message(
             type=TWO_PC_REQUEST,
             sender_id=self.bully_manager.node_id,
             timestamp=time.time(),
             data={
                 'phase': 'COMMIT',
-                'txn_id': txn.txn_id
+                'txn_id': txn.txn_id,
+                'commit_data': local_result.get('data', {}),  # Incluye folio, id_visita
+                'txn_data': txn.data  # Datos originales de la transacción
             }
         )
 
@@ -355,6 +358,22 @@ class TwoPhaseCommitCoordinator:
 
                 return {'ok': True, 'reason': None}
 
+            elif txn.operation == 'CREATE_DOCTOR':
+                # Verificar que la sala existe
+                from models import Sala
+                sala = Sala.query.get(data.get('sala_id'))
+                if not sala:
+                    return {'ok': False, 'reason': 'Sala no existe'}
+                return {'ok': True, 'reason': None}
+
+            elif txn.operation == 'CREATE_TRABAJADOR':
+                # Verificar que la sala existe
+                from models import Sala
+                sala = Sala.query.get(data.get('sala_id'))
+                if not sala:
+                    return {'ok': False, 'reason': 'Sala no existe'}
+                return {'ok': True, 'reason': None}
+
             return {'ok': False, 'reason': f'Operación desconocida: {txn.operation}'}
 
     def _apply_local_transaction(self, txn: Transaction) -> Dict[str, Any]:
@@ -375,6 +394,10 @@ class TwoPhaseCommitCoordinator:
                     return self._create_visit_local(data)
                 elif txn.operation == 'CLOSE_VISIT':
                     return self._close_visit_local(data)
+                elif txn.operation == 'CREATE_DOCTOR':
+                    return self._create_doctor_local(data)
+                elif txn.operation == 'CREATE_TRABAJADOR':
+                    return self._create_trabajador_local(data)
                 else:
                     return {'success': False, 'error': f'Unknown operation: {txn.operation}'}
 
@@ -461,6 +484,64 @@ class TwoPhaseCommitCoordinator:
 
         logger.info(f"[2PC] Local CLOSE_VISIT committed: folio={data['folio']}")
         return {'success': True, 'data': {'folio': data['folio']}}
+
+    def _create_doctor_local(self, data: Dict) -> Dict[str, Any]:
+        """Crea un doctor localmente con su usuario."""
+        from models import db, Doctor
+        from auth import crear_usuario_para_personal
+
+        doctor = Doctor(
+            nombre=data['nombre'],
+            especialidad=data['especialidad'],
+            id_sala=data['sala_id'],
+            disponible=True,
+            activo=True
+        )
+        db.session.add(doctor)
+        db.session.flush()  # Para obtener el ID generado
+
+        # Crear usuario automáticamente
+        user_result = crear_usuario_para_personal('doctor', doctor.id_doctor)
+
+        db.session.commit()
+
+        logger.info(f"[2PC] Local CREATE_DOCTOR committed: id={doctor.id_doctor}, user={user_result.get('username')}")
+        return {
+            'success': True,
+            'data': {
+                'id_doctor': doctor.id_doctor,
+                'username': user_result.get('username'),
+                'password': user_result.get('password')
+            }
+        }
+
+    def _create_trabajador_local(self, data: Dict) -> Dict[str, Any]:
+        """Crea un trabajador social localmente con su usuario."""
+        from models import db, TrabajadorSocial
+        from auth import crear_usuario_para_personal
+
+        trabajador = TrabajadorSocial(
+            nombre=data['nombre'],
+            id_sala=data['sala_id'],
+            activo=True
+        )
+        db.session.add(trabajador)
+        db.session.flush()  # Para obtener el ID generado
+
+        # Crear usuario automáticamente
+        user_result = crear_usuario_para_personal('trabajador_social', trabajador.id_trabajador)
+
+        db.session.commit()
+
+        logger.info(f"[2PC] Local CREATE_TRABAJADOR committed: id={trabajador.id_trabajador}, user={user_result.get('username')}")
+        return {
+            'success': True,
+            'data': {
+                'id_trabajador': trabajador.id_trabajador,
+                'username': user_result.get('username'),
+                'password': user_result.get('password')
+            }
+        }
 
 
 # ============================================================================
@@ -604,6 +685,32 @@ def _handle_prepare(message, flask_app, node_id) -> 'Message':
                         data={'vote': 'NO', 'reason': 'Visita no encontrada o no activa'}
                     )
 
+            elif operation == 'CREATE_DOCTOR':
+                # Verificar que la sala existe
+                from models import Sala
+                sala = Sala.query.get(txn_data.get('sala_id'))
+                if not sala:
+                    logger.warning(f"[2PC-PREPARE] Sala not found for {txn_id}")
+                    return Message(
+                        type=TWO_PC_RESPONSE,
+                        sender_id=node_id,
+                        timestamp=time.time(),
+                        data={'vote': 'NO', 'reason': 'Sala no existe'}
+                    )
+
+            elif operation == 'CREATE_TRABAJADOR':
+                # Verificar que la sala existe
+                from models import Sala
+                sala = Sala.query.get(txn_data.get('sala_id'))
+                if not sala:
+                    logger.warning(f"[2PC-PREPARE] Sala not found for {txn_id}")
+                    return Message(
+                        type=TWO_PC_RESPONSE,
+                        sender_id=node_id,
+                        timestamp=time.time(),
+                        data={'vote': 'NO', 'reason': 'Sala no existe'}
+                    )
+
             # Guardar en WAL y votar YES
             save_pending_txn(txn_id, operation, txn_data)
             logger.info(f"[2PC-PREPARE] Voting YES for {txn_id}")
@@ -630,6 +737,7 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
     COMMIT phase handler (participante).
 
     Aplica la transacción guardada en WAL.
+    Usa el folio generado por el coordinador para consistencia en VMs separadas.
     """
     from bully.communication import Message
     from models import db, Doctor, Cama, Paciente, VisitaEmergencia
@@ -637,6 +745,10 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
 
     data = message.data
     txn_id = data['txn_id']
+
+    # Obtener datos del coordinador (folio generado, etc.)
+    commit_data = data.get('commit_data', {})
+    folio_coordinador = commit_data.get('folio')  # Folio generado por el coordinador
 
     pending_txn = get_pending_txn(txn_id)
     if not pending_txn:
@@ -655,12 +767,18 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
 
             if operation == 'CREATE_VISIT':
                 # Verificar si la visita ya existe (BD compartida - coordinador ya la creó)
-                # Buscar por doctor_id + cama_id + estado='activa' (folio ahora es None hasta insert)
-                existing_visit = VisitaEmergencia.query.filter_by(
-                    id_doctor=txn_data['doctor_id'],
-                    id_cama=txn_data['cama_id'],
-                    estado='activa'
-                ).first()
+                # Primero buscar por folio del coordinador (más preciso)
+                existing_visit = None
+                if folio_coordinador:
+                    existing_visit = VisitaEmergencia.query.filter_by(folio=folio_coordinador).first()
+
+                # Fallback: buscar por doctor_id + cama_id + estado='activa'
+                if not existing_visit:
+                    existing_visit = VisitaEmergencia.query.filter_by(
+                        id_doctor=txn_data['doctor_id'],
+                        id_cama=txn_data['cama_id'],
+                        estado='activa'
+                    ).first()
 
                 if existing_visit:
                     # BD compartida - el coordinador ya insertó la visita
@@ -673,8 +791,8 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                         data={'ack': True}
                     )
 
-                # BD separada - hacer INSERT normal
-                logger.warning(f"[2PC-COMMIT] Participante creando visita (folio se genera en insert)")
+                # BD separada - hacer INSERT con folio del coordinador
+                logger.warning(f"[2PC-COMMIT] Participante creando visita con folio: {folio_coordinador}")
 
                 doctor = Doctor.query.get(txn_data['doctor_id'])
                 cama = Cama.query.get(txn_data['cama_id'])
@@ -705,10 +823,10 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                     cama.ocupada = True
                     cama.id_paciente = paciente.id_paciente
 
-                # Crear visita (folio=None, se genera en before_insert)
-                # Formato: P{id_paciente}-D{id_doctor}-S{id_sala}-{consecutivo:04d}
+                # Crear visita usando el FOLIO DEL COORDINADOR para consistencia
+                # Si no hay folio del coordinador (versión antigua), se genera automáticamente
                 visita = VisitaEmergencia(
-                    folio=None,  # Se genera automaticamente en before_insert
+                    folio=folio_coordinador,  # Usar folio del coordinador para consistencia en VMs
                     id_paciente=paciente.id_paciente,
                     id_doctor=txn_data['doctor_id'],
                     id_cama=txn_data['cama_id'],
@@ -719,7 +837,7 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                     estado='activa'
                 )
                 db.session.add(visita)
-                logger.warning(f"[2PC-COMMIT] Visita creada exitosamente: folio={visita.folio}")
+                logger.warning(f"[2PC-COMMIT] Visita creada con folio coordinador: {folio_coordinador}")
 
             elif operation == 'CLOSE_VISIT':
                 # Verificar si la visita ya está cerrada (BD compartida)
@@ -749,6 +867,68 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                 if visita:
                     visita.estado = 'completada'
                     visita.fecha_cierre = datetime.utcnow()
+
+            elif operation == 'CREATE_DOCTOR':
+                from models import Doctor as DoctorModel
+                from auth import crear_usuario_para_personal
+
+                # Verificar si ya existe (BD compartida)
+                commit_data = data.get('commit_data', {})
+                id_doctor_coord = commit_data.get('id_doctor')
+                if id_doctor_coord:
+                    existing = DoctorModel.query.get(id_doctor_coord)
+                    if existing:
+                        logger.warning(f"[2PC-COMMIT] Doctor ya existe: {id_doctor_coord} (BD compartida)")
+                        remove_pending_txn(txn_id)
+                        return Message(
+                            type=TWO_PC_RESPONSE,
+                            sender_id=node_id,
+                            timestamp=time.time(),
+                            data={'ack': True}
+                        )
+
+                # Crear doctor
+                doctor_nuevo = DoctorModel(
+                    nombre=txn_data['nombre'],
+                    especialidad=txn_data['especialidad'],
+                    id_sala=txn_data['sala_id'],
+                    disponible=True,
+                    activo=True
+                )
+                db.session.add(doctor_nuevo)
+                db.session.flush()
+                crear_usuario_para_personal('doctor', doctor_nuevo.id_doctor)
+                logger.warning(f"[2PC-COMMIT] Doctor creado: {doctor_nuevo.id_doctor}")
+
+            elif operation == 'CREATE_TRABAJADOR':
+                from models import TrabajadorSocial
+                from auth import crear_usuario_para_personal
+
+                # Verificar si ya existe (BD compartida)
+                commit_data = data.get('commit_data', {})
+                id_trabajador_coord = commit_data.get('id_trabajador')
+                if id_trabajador_coord:
+                    existing = TrabajadorSocial.query.get(id_trabajador_coord)
+                    if existing:
+                        logger.warning(f"[2PC-COMMIT] Trabajador ya existe: {id_trabajador_coord} (BD compartida)")
+                        remove_pending_txn(txn_id)
+                        return Message(
+                            type=TWO_PC_RESPONSE,
+                            sender_id=node_id,
+                            timestamp=time.time(),
+                            data={'ack': True}
+                        )
+
+                # Crear trabajador
+                trabajador_nuevo = TrabajadorSocial(
+                    nombre=txn_data['nombre'],
+                    id_sala=txn_data['sala_id'],
+                    activo=True
+                )
+                db.session.add(trabajador_nuevo)
+                db.session.flush()
+                crear_usuario_para_personal('trabajador_social', trabajador_nuevo.id_trabajador)
+                logger.warning(f"[2PC-COMMIT] Trabajador creado: {trabajador_nuevo.id_trabajador}")
 
             db.session.commit()
             remove_pending_txn(txn_id)

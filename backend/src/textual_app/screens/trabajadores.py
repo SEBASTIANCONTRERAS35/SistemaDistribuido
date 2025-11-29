@@ -26,6 +26,96 @@ from textual.binding import Binding
 from rich.text import Text
 
 
+class CrearTrabajadorModal(ModalScreen[Dict[str, Any]]):
+    """Modal para crear un nuevo trabajador social"""
+
+    CSS = """
+    CrearTrabajadorModal {
+        align: center middle;
+    }
+
+    #modal-container {
+        width: 60;
+        height: auto;
+        background: $surface;
+        border: thick $primary;
+        padding: 1 2;
+    }
+
+    #modal-title {
+        text-align: center;
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+
+    .field-label {
+        margin-top: 1;
+        color: $text;
+    }
+
+    Input {
+        margin-bottom: 1;
+    }
+
+    Select {
+        margin-bottom: 1;
+    }
+
+    #buttons {
+        margin-top: 1;
+        height: 3;
+    }
+
+    #btn-crear {
+        margin-right: 1;
+    }
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-container"):
+            yield Label("➕ CREAR NUEVO TRABAJADOR SOCIAL", id="modal-title")
+
+            yield Label("Nombre:", classes="field-label")
+            yield Input(placeholder="Ej: Lic. María García", id="input-nombre")
+
+            yield Label("Sala asignada:", classes="field-label")
+            yield Select(
+                options=[
+                    ("Sala 1", 1),
+                    ("Sala 2", 2),
+                    ("Sala 3", 3),
+                    ("Sala 4", 4),
+                ],
+                id="select-sala",
+                allow_blank=False,
+                value=1
+            )
+
+            with Horizontal(id="buttons"):
+                yield Button("Crear", variant="success", id="btn-crear")
+                yield Button("Cancelar", variant="default", id="btn-cancelar")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-crear":
+            nombre = self.query_one("#input-nombre", Input).value.strip()
+            sala = self.query_one("#select-sala", Select).value
+
+            if not nombre:
+                self.notify("❌ El nombre es requerido", severity="error")
+                return
+
+            self.dismiss({
+                'nombre': nombre,
+                'sala_id': sala
+            })
+        elif event.button.id == "btn-cancelar":
+            self.dismiss(None)
+
+
 class EditarTrabajadorModal(ModalScreen):
     """Modal for editing trabajador social information"""
 
@@ -297,6 +387,7 @@ class TrabajadoresScreen(Screen):
     """
 
     BINDINGS = [
+        Binding("ctrl+n", "create_trabajador", "Nuevo Trabajador", show=True),
         Binding("ctrl+r", "refresh", "Actualizar", show=True),
         Binding("escape", "app.pop_screen", "Volver", show=True),
     ]
@@ -324,6 +415,13 @@ class TrabajadoresScreen(Screen):
         color: $surface;
         text-align: center;
         margin-top: 1;
+    }
+
+    #toolbar {
+        background: $panel;
+        padding: 1 2;
+        height: auto;
+        border: solid $border;
     }
 
     #trabajadores-table {
@@ -367,6 +465,10 @@ class TrabajadoresScreen(Screen):
             user_display = self.user_info.get('nombre') or self.user_info.get('username', self.username)
             stats_text = f"👤 {user_display} | Nodo {self.bully_manager.node_id}"
             yield Label(stats_text, id="header-stats")
+
+        # Toolbar with create button
+        with Horizontal(id="toolbar"):
+            yield Button("➕ Nuevo Trabajador", variant="success", id="btn-nuevo-trabajador")
 
         # DataTable for trabajadores
         yield DataTable(id="trabajadores-table", zebra_stripes=True, cursor_type="row")
@@ -504,6 +606,71 @@ class TrabajadoresScreen(Screen):
         self.notify("🔄 Actualizando trabajadores sociales...", severity="information")
         self.load_trabajadores()
 
+    def action_create_trabajador(self) -> None:
+        """Open modal to create a new trabajador social"""
+        self.app.push_screen(CrearTrabajadorModal(), self._handle_crear_trabajador)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses"""
+        if event.button.id == "btn-nuevo-trabajador":
+            self.action_create_trabajador()
+
+    def _handle_crear_trabajador(self, result: Dict[str, Any] | None) -> None:
+        """Handle result from CrearTrabajadorModal"""
+        if result is None:
+            return  # Cancelled
+
+        self.notify("⏳ Creando trabajador social con 2PC...", severity="information")
+        self._create_trabajador_2pc(result)
+
+    @work(exclusive=True)
+    async def _create_trabajador_2pc(self, data: Dict[str, Any]) -> None:
+        """Create trabajador using 2PC"""
+        try:
+            result = await asyncio.to_thread(self._execute_create_trabajador_2pc, data)
+
+            if result.get('success'):
+                commit_data = result.get('commit_data', {})
+                username = commit_data.get('username', 'N/A')
+                password = commit_data.get('password', 'N/A')
+                self.notify(
+                    f"✅ Trabajador creado!\nUsuario: {username}\nContraseña: {password}",
+                    severity="information",
+                    timeout=10
+                )
+                self.load_trabajadores()  # Refresh table
+            else:
+                self.notify(f"❌ Error: {result.get('error')}", severity="error")
+
+        except Exception as e:
+            self.notify(f"❌ Error: {str(e)}", severity="error")
+
+    def _execute_create_trabajador_2pc(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute 2PC for creating trabajador (runs in thread pool)"""
+        with self.flask_app.app_context():
+            from bully.two_phase_commit import TwoPhaseCommitCoordinator
+
+            coordinator = TwoPhaseCommitCoordinator(self.bully_manager, self.flask_app)
+            txn_id = coordinator.begin_transaction('CREATE_TRABAJADOR', data)
+            result = coordinator.execute_2pc(txn_id)
+
+            # Get commit data if successful
+            if result.get('success'):
+                from models import TrabajadorSocial
+                trabajador = TrabajadorSocial.query.filter_by(
+                    nombre=data['nombre'],
+                    id_sala=data['sala_id']
+                ).order_by(TrabajadorSocial.id_trabajador.desc()).first()
+
+                if trabajador:
+                    result['commit_data'] = {
+                        'id_trabajador': trabajador.id_trabajador,
+                        'username': f"social{trabajador.id_trabajador}",
+                        'password': '1234'
+                    }
+
+            return result
+
 
 # Export
-__all__ = ['TrabajadoresScreen', 'TrabajadorDetailModal', 'EditarTrabajadorModal']
+__all__ = ['TrabajadoresScreen', 'TrabajadorDetailModal', 'EditarTrabajadorModal', 'CrearTrabajadorModal']

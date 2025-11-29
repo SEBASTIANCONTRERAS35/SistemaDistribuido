@@ -1,6 +1,6 @@
 """
 Doctores Screen - View all doctors across all salas
-Read-only view for trabajador social to monitor doctor status
+Trabajador social can view and CREATE new doctors
 """
 
 import asyncio
@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import List, Dict, Any
 
 from textual.app import ComposeResult
-from textual.screen import Screen
+from textual.screen import Screen, ModalScreen
 from textual.widgets import (
     Header,
     Footer,
@@ -19,11 +19,109 @@ from textual.widgets import (
     Label,
     Select
 )
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, Grid
 from textual.reactive import reactive
 from textual import work
 from textual.binding import Binding
 from rich.text import Text
+
+
+class CrearDoctorModal(ModalScreen[Dict[str, Any]]):
+    """Modal para crear un nuevo doctor"""
+
+    CSS = """
+    CrearDoctorModal {
+        align: center middle;
+    }
+
+    #modal-container {
+        width: 60;
+        height: auto;
+        background: $surface;
+        border: thick $primary;
+        padding: 1 2;
+    }
+
+    #modal-title {
+        text-align: center;
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+
+    .field-label {
+        margin-top: 1;
+        color: $text;
+    }
+
+    Input {
+        margin-bottom: 1;
+    }
+
+    Select {
+        margin-bottom: 1;
+    }
+
+    #buttons {
+        margin-top: 1;
+        height: 3;
+    }
+
+    #btn-crear {
+        margin-right: 1;
+    }
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-container"):
+            yield Label("➕ CREAR NUEVO DOCTOR", id="modal-title")
+
+            yield Label("Nombre:", classes="field-label")
+            yield Input(placeholder="Ej: Dr. Juan Pérez", id="input-nombre")
+
+            yield Label("Especialidad:", classes="field-label")
+            yield Input(placeholder="Ej: Medicina General", id="input-especialidad")
+
+            yield Label("Sala asignada:", classes="field-label")
+            yield Select(
+                options=[
+                    ("Sala 1", 1),
+                    ("Sala 2", 2),
+                    ("Sala 3", 3),
+                    ("Sala 4", 4),
+                ],
+                id="select-sala",
+                allow_blank=False,
+                value=1
+            )
+
+            with Horizontal(id="buttons"):
+                yield Button("Crear", variant="success", id="btn-crear")
+                yield Button("Cancelar", variant="default", id="btn-cancelar")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-crear":
+            nombre = self.query_one("#input-nombre", Input).value.strip()
+            especialidad = self.query_one("#input-especialidad", Input).value.strip()
+            sala = self.query_one("#select-sala", Select).value
+
+            if not nombre:
+                self.notify("❌ El nombre es requerido", severity="error")
+                return
+            if not especialidad:
+                self.notify("❌ La especialidad es requerida", severity="error")
+                return
+
+            self.dismiss({
+                'nombre': nombre,
+                'especialidad': especialidad,
+                'sala_id': sala
+            })
+        elif event.button.id == "btn-cancelar":
+            self.dismiss(None)
 
 
 class DoctoresScreen(Screen):
@@ -33,6 +131,7 @@ class DoctoresScreen(Screen):
     """
 
     BINDINGS = [
+        Binding("ctrl+n", "create_doctor", "Nuevo Doctor", show=True),
         Binding("ctrl+r", "refresh", "Actualizar", show=True),
         Binding("escape", "app.pop_screen", "Volver", show=True),
     ]
@@ -77,6 +176,10 @@ class DoctoresScreen(Screen):
     #filter-disponibilidad {
         width: 20;
         margin-right: 2;
+    }
+
+    #btn-nuevo-doctor {
+        margin-left: 2;
     }
 
     #doctores-table {
@@ -158,6 +261,8 @@ class DoctoresScreen(Screen):
                 id="filter-disponibilidad",
                 allow_blank=False
             )
+
+            yield Button("➕ Nuevo Doctor", variant="success", id="btn-nuevo-doctor")
 
         # DataTable for doctors
         yield DataTable(id="doctores-table", zebra_stripes=True, cursor_type="row")
@@ -324,6 +429,71 @@ class DoctoresScreen(Screen):
         self.notify("🔄 Actualizando doctores...", severity="information")
         self.load_doctores()
 
+    def action_create_doctor(self) -> None:
+        """Open modal to create a new doctor"""
+        self.app.push_screen(CrearDoctorModal(), self._handle_crear_doctor)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses"""
+        if event.button.id == "btn-nuevo-doctor":
+            self.action_create_doctor()
+
+    def _handle_crear_doctor(self, result: Dict[str, Any] | None) -> None:
+        """Handle result from CrearDoctorModal"""
+        if result is None:
+            return  # Cancelled
+
+        self.notify("⏳ Creando doctor con 2PC...", severity="information")
+        self._create_doctor_2pc(result)
+
+    @work(exclusive=True)
+    async def _create_doctor_2pc(self, data: Dict[str, Any]) -> None:
+        """Create doctor using 2PC"""
+        try:
+            result = await asyncio.to_thread(self._execute_create_doctor_2pc, data)
+
+            if result.get('success'):
+                commit_data = result.get('commit_data', {})
+                username = commit_data.get('username', 'N/A')
+                password = commit_data.get('password', 'N/A')
+                self.notify(
+                    f"✅ Doctor creado!\nUsuario: {username}\nContraseña: {password}",
+                    severity="information",
+                    timeout=10
+                )
+                self.load_doctores()  # Refresh table
+            else:
+                self.notify(f"❌ Error: {result.get('error')}", severity="error")
+
+        except Exception as e:
+            self.notify(f"❌ Error: {str(e)}", severity="error")
+
+    def _execute_create_doctor_2pc(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute 2PC for creating doctor (runs in thread pool)"""
+        with self.flask_app.app_context():
+            from bully.two_phase_commit import TwoPhaseCommitCoordinator
+
+            coordinator = TwoPhaseCommitCoordinator(self.bully_manager, self.flask_app)
+            txn_id = coordinator.begin_transaction('CREATE_DOCTOR', data)
+            result = coordinator.execute_2pc(txn_id)
+
+            # Get commit data if successful
+            if result.get('success'):
+                from models import Doctor
+                doctor = Doctor.query.filter_by(
+                    nombre=data['nombre'],
+                    id_sala=data['sala_id']
+                ).order_by(Doctor.id_doctor.desc()).first()
+
+                if doctor:
+                    result['commit_data'] = {
+                        'id_doctor': doctor.id_doctor,
+                        'username': f"doctor{doctor.id_doctor}",
+                        'password': f"doctor{doctor.id_doctor}"
+                    }
+
+            return result
+
 
 # Export
-__all__ = ['DoctoresScreen']
+__all__ = ['DoctoresScreen', 'CrearDoctorModal']

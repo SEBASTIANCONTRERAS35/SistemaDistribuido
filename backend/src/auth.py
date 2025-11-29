@@ -132,6 +132,53 @@ def get_rol_display(rol):
     return roles_display.get(rol, rol)
 
 
+def crear_usuario_para_personal(tipo: str, id_relacionado: int, nombre: str = None) -> dict:
+    """
+    Crea un usuario automáticamente para un doctor o trabajador social.
+
+    Args:
+        tipo: 'doctor' o 'trabajador_social'
+        id_relacionado: ID del doctor o trabajador en su tabla
+        nombre: Nombre para generar username si se desea personalizar
+
+    Returns:
+        {'success': bool, 'username': str, 'password': str, 'error': str}
+    """
+    try:
+        if tipo == 'doctor':
+            username = f"doctor{id_relacionado}"
+            password = f"doctor{id_relacionado}"
+            rol = 'doctor'
+        elif tipo == 'trabajador_social':
+            username = f"social{id_relacionado}"
+            password = "1234"
+            rol = 'trabajador_social'
+        else:
+            return {'success': False, 'error': f'Tipo no válido: {tipo}'}
+
+        # Verificar si ya existe
+        existing = Usuario.query.filter_by(username=username).first()
+        if existing:
+            return {'success': True, 'username': username, 'password': password, 'note': 'Usuario ya existía'}
+
+        # Crear usuario
+        user = Usuario(
+            username=username,
+            rol=rol,
+            id_relacionado=id_relacionado,
+            activo=True
+        )
+        user.set_password(password)
+        db.session.add(user)
+        db.session.commit()
+
+        return {'success': True, 'username': username, 'password': password}
+
+    except Exception as e:
+        db.session.rollback()
+        return {'success': False, 'error': str(e)}
+
+
 def can_access_sala(user, id_sala):
     """
     Verifica si un usuario puede acceder a recursos de una sala específica.
