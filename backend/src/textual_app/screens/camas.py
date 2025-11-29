@@ -135,14 +135,9 @@ class CamasScreen(Screen):
 
         # Toolbar with filters
         with Horizontal(id="toolbar"):
+            # Selector dinámico de salas - se popula en load_camas
             yield Select(
-                options=[
-                    ("Todas las salas", "todas"),
-                    ("Sala 1", "1"),
-                    ("Sala 2", "2"),
-                    ("Sala 3", "3"),
-                    ("Sala 4", "4"),
-                ],
+                options=[("Todas las salas", "todas")],  # Placeholder, se actualiza dinámicamente
                 value="todas",
                 id="filter-sala",
                 allow_blank=False
@@ -191,12 +186,16 @@ class CamasScreen(Screen):
 
         try:
             # Run DB query in thread pool to avoid blocking UI
-            camas = await asyncio.to_thread(self._fetch_camas_from_db)
+            result = await asyncio.to_thread(self._fetch_camas_from_db)
+
+            # Actualizar el selector de filtro dinámicamente
+            filter_sala = self.query_one("#filter-sala", Select)
+            filter_sala.set_options(result['salas_filter'])
 
             # Update reactive state (triggers watch_camas_data)
-            self.camas_data = camas
+            self.camas_data = result['camas']
 
-            self.update_status(f"✓ {len(camas)} camas cargadas")
+            self.update_status(f"✓ {len(result['camas'])} camas cargadas")
 
         except Exception as e:
             self.update_status(f"❌ Error: {str(e)}")
@@ -204,18 +203,28 @@ class CamasScreen(Screen):
         finally:
             self.is_loading = False
 
-    def _fetch_camas_from_db(self) -> List[Dict[str, Any]]:
-        """Fetch beds from database (runs in thread pool)"""
+    def _fetch_camas_from_db(self) -> Dict[str, Any]:
+        """Fetch beds and salas from database (runs in thread pool)"""
         with self.flask_app.app_context():
-            from models import Cama, Paciente, VisitaEmergencia
+            from models import Cama, Paciente, VisitaEmergencia, Sala
+            from auth import get_active_sala_ids
             from sqlalchemy.orm import joinedload
 
-            camas = Cama.query.options(
+            # Obtener salas de nodos activos en el cluster
+            active_salas = get_active_sala_ids(self.bully_manager)
+
+            # Query con filtro por salas activas
+            query = Cama.query.options(
                 joinedload(Cama.sala),
                 joinedload(Cama.paciente_actual)
-            ).order_by(Cama.id_sala, Cama.numero).all()
+            )
 
-            result = []
+            if active_salas:
+                query = query.filter(Cama.id_sala.in_(active_salas))
+
+            camas = query.order_by(Cama.id_sala, Cama.numero).all()
+
+            result_camas = []
             for cama in camas:
                 # Buscar visita activa en esta cama
                 visita_activa = None
@@ -225,7 +234,7 @@ class CamasScreen(Screen):
                         estado='activa'
                     ).first()
 
-                result.append({
+                result_camas.append({
                     'id_cama': cama.id_cama,
                     'sala': cama.sala.numero if cama.sala else 'N/A',
                     'id_sala': cama.id_sala,
@@ -235,7 +244,19 @@ class CamasScreen(Screen):
                     'visita': visita_activa.folio if visita_activa else None
                 })
 
-            return result
+            # Cargar salas dinámicamente para el filtro (solo activas en cluster)
+            query_salas = Sala.query.filter_by(activa=True)
+            if active_salas:
+                query_salas = query_salas.filter(Sala.id_sala.in_(active_salas))
+            salas = query_salas.order_by(Sala.numero).all()
+
+            salas_filter = [("Todas las salas", "todas")]
+            salas_filter.extend([(f"Sala {s.numero}", str(s.id_sala)) for s in salas])
+
+            return {
+                'camas': result_camas,
+                'salas_filter': salas_filter
+            }
 
     def watch_camas_data(self, camas: List[Dict[str, Any]]) -> None:
         """React to changes in camas data"""

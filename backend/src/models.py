@@ -256,19 +256,35 @@ class Usuario(UserMixin, db.Model):
 
 # Funciones de utilidad para queries comunes
 
-def get_doctores_disponibles(id_sala=None):
-    """Obtiene doctores disponibles, opcionalmente filtrados por sala"""
+def get_doctores_disponibles(id_sala=None, active_salas=None):
+    """
+    Obtiene doctores disponibles, opcionalmente filtrados por sala.
+
+    Args:
+        id_sala: Filtrar por sala específica
+        active_salas: Lista de IDs de salas activas (nodos del cluster)
+    """
     query = Doctor.query.filter_by(disponible=True, activo=True)
     if id_sala:
         query = query.filter_by(id_sala=id_sala)
+    if active_salas is not None:
+        query = query.filter(Doctor.id_sala.in_(active_salas))
     return query.all()
 
 
-def get_camas_disponibles(id_sala=None):
-    """Obtiene camas disponibles, opcionalmente filtradas por sala"""
+def get_camas_disponibles(id_sala=None, active_salas=None):
+    """
+    Obtiene camas disponibles, opcionalmente filtradas por sala.
+
+    Args:
+        id_sala: Filtrar por sala específica
+        active_salas: Lista de IDs de salas activas (nodos del cluster)
+    """
     query = Cama.query.filter_by(ocupada=False)
     if id_sala:
         query = query.filter_by(id_sala=id_sala)
+    if active_salas is not None:
+        query = query.filter(Cama.id_sala.in_(active_salas))
     return query.all()
 
 
@@ -282,19 +298,26 @@ def get_visitas_activas(id_doctor=None, id_sala=None):
     return query.order_by(VisitaEmergencia.timestamp.desc()).all()
 
 
-def elegir_sala_menos_carga():
+def elegir_sala_menos_carga(active_salas=None):
     """
     Evalúa carga de todas las salas y retorna la mejor opción.
     Criterio: sala con menos visitas activas Y camas/doctores disponibles.
 
     Usado por el MAESTRO para balancear carga entre salas.
 
+    Args:
+        active_salas: Lista de IDs de salas activas (nodos del cluster)
+
     Returns:
         int: ID de la sala con menos carga, o None si no hay sala disponible
     """
     salas_stats = []
 
-    for sala in Sala.query.filter_by(activa=True).all():
+    query = Sala.query.filter_by(activa=True)
+    if active_salas is not None:
+        query = query.filter(Sala.id_sala.in_(active_salas))
+
+    for sala in query.all():
         visitas_activas = VisitaEmergencia.query.filter_by(
             id_sala=sala.id_sala, estado='activa'
         ).count()

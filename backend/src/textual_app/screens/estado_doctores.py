@@ -130,8 +130,16 @@ class EstadoDoctoresScreen(Screen):
         """Fetch doctors from database"""
         with self.flask_app.app_context():
             from models import Doctor
+            from auth import get_active_sala_ids
 
-            doctores = Doctor.query.filter_by(activo=True).order_by(Doctor.id_sala, Doctor.nombre).all()
+            # Obtener salas de nodos activos en el cluster
+            active_salas = get_active_sala_ids(self.bully_manager)
+
+            query = Doctor.query.filter_by(activo=True)
+            if active_salas:
+                query = query.filter(Doctor.id_sala.in_(active_salas))
+
+            doctores = query.order_by(Doctor.id_sala, Doctor.nombre).all()
             result = []
 
             for doctor in doctores:

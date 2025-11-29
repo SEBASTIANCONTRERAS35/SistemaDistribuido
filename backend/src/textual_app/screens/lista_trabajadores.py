@@ -119,8 +119,16 @@ class ListaTrabajadoresScreen(Screen):
         """Fetch social workers from database"""
         with self.flask_app.app_context():
             from models import TrabajadorSocial
+            from auth import get_active_sala_ids
 
-            trabajadores = TrabajadorSocial.query.order_by(TrabajadorSocial.id_sala, TrabajadorSocial.nombre).all()
+            # Obtener salas de nodos activos en el cluster
+            active_salas = get_active_sala_ids(self.bully_manager)
+
+            query = TrabajadorSocial.query
+            if active_salas:
+                query = query.filter(TrabajadorSocial.id_sala.in_(active_salas))
+
+            trabajadores = query.order_by(TrabajadorSocial.id_sala, TrabajadorSocial.nombre).all()
             result = []
 
             for trabajador in trabajadores:

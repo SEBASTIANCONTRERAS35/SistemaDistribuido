@@ -72,8 +72,9 @@ class CrearDoctorModal(ModalScreen[Dict[str, Any]]):
     }
     """
 
-    def __init__(self):
+    def __init__(self, salas_options: List[tuple]):
         super().__init__()
+        self.salas_options = salas_options
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-container"):
@@ -86,16 +87,13 @@ class CrearDoctorModal(ModalScreen[Dict[str, Any]]):
             yield Input(placeholder="Ej: Medicina General", id="input-especialidad")
 
             yield Label("Sala asignada:", classes="field-label")
+            # Selector dinámico de salas desde BD
+            default_value = self.salas_options[0][1] if self.salas_options else 1
             yield Select(
-                options=[
-                    ("Sala 1", 1),
-                    ("Sala 2", 2),
-                    ("Sala 3", 3),
-                    ("Sala 4", 4),
-                ],
+                options=self.salas_options,
                 id="select-sala",
                 allow_blank=False,
-                value=1
+                value=default_value
             )
 
             with Horizontal(id="buttons"):
@@ -219,6 +217,7 @@ class DoctoresScreen(Screen):
         self.username = username
         self.user_info = user_info or {}
         self.filtered_doctores: List[Dict[str, Any]] = []
+        self.salas_options: List[tuple] = []  # Para selectores dinámicos
 
         # Verificar permisos
         if self.user_info.get('rol') != 'trabajador_social':
@@ -238,14 +237,9 @@ class DoctoresScreen(Screen):
 
         # Toolbar with filters
         with Horizontal(id="toolbar"):
+            # Selector dinámico de salas - se popula en on_mount
             yield Select(
-                options=[
-                    ("Todas las salas", "todas"),
-                    ("Sala 1", "1"),
-                    ("Sala 2", "2"),
-                    ("Sala 3", "3"),
-                    ("Sala 4", "4"),
-                ],
+                options=[("Todas las salas", "todas")],  # Placeholder, se actualiza en on_mount
                 value="todas",
                 id="filter-sala",
                 allow_blank=False
@@ -297,12 +291,19 @@ class DoctoresScreen(Screen):
 
         try:
             # Run DB query in thread pool to avoid blocking UI
-            doctores = await asyncio.to_thread(self._fetch_doctores_from_db)
+            result = await asyncio.to_thread(self._fetch_doctores_from_db)
+
+            # Guardar opciones de salas para el modal de crear
+            self.salas_options = result['salas_options']
+
+            # Actualizar el selector de filtro dinámicamente
+            filter_sala = self.query_one("#filter-sala", Select)
+            filter_sala.set_options(result['salas_filter'])
 
             # Update reactive state (triggers watch_doctores_data)
-            self.doctores_data = doctores
+            self.doctores_data = result['doctores']
 
-            self.update_status(f"✓ {len(doctores)} doctores cargados")
+            self.update_status(f"✓ {len(result['doctores'])} doctores cargados")
 
         except Exception as e:
             self.update_status(f"❌ Error: {str(e)}")
@@ -310,18 +311,27 @@ class DoctoresScreen(Screen):
         finally:
             self.is_loading = False
 
-    def _fetch_doctores_from_db(self) -> List[Dict[str, Any]]:
-        """Fetch doctors from database (runs in thread pool)"""
+    def _fetch_doctores_from_db(self) -> Dict[str, Any]:
+        """Fetch doctors and salas from database (runs in thread pool)"""
         with self.flask_app.app_context():
-            from models import Doctor, VisitaEmergencia
+            from models import Doctor, VisitaEmergencia, Sala
+            from auth import get_active_sala_ids
             from sqlalchemy.orm import joinedload
 
-            # Eager load sala
-            doctores = Doctor.query.options(
-                joinedload(Doctor.sala)
-            ).filter_by(activo=True).order_by(Doctor.nombre).all()
+            # Obtener salas de nodos activos en el cluster
+            active_salas = get_active_sala_ids(self.bully_manager)
 
-            result = []
+            # Eager load sala, filtrar por salas activas
+            query = Doctor.query.options(
+                joinedload(Doctor.sala)
+            ).filter_by(activo=True)
+
+            if active_salas:
+                query = query.filter(Doctor.id_sala.in_(active_salas))
+
+            doctores = query.order_by(Doctor.nombre).all()
+
+            result_doctores = []
             for doc in doctores:
                 # Buscar visita activa del doctor
                 visita_activa = VisitaEmergencia.query.filter_by(
@@ -329,7 +339,7 @@ class DoctoresScreen(Screen):
                     estado='activa'
                 ).first()
 
-                result.append({
+                result_doctores.append({
                     'id_doctor': doc.id_doctor,
                     'nombre': doc.nombre,
                     'especialidad': doc.especialidad or 'General',
@@ -339,7 +349,21 @@ class DoctoresScreen(Screen):
                     'visita_actual': visita_activa.folio if visita_activa else None
                 })
 
-            return result
+            # Cargar salas dinámicamente (solo activas en cluster)
+            query_salas = Sala.query.filter_by(activa=True)
+            if active_salas:
+                query_salas = query_salas.filter(Sala.id_sala.in_(active_salas))
+            salas = query_salas.order_by(Sala.numero).all()
+
+            salas_options = [(f"Sala {s.numero}", s.id_sala) for s in salas]
+            salas_filter = [("Todas las salas", "todas")]
+            salas_filter.extend([(f"Sala {s.numero}", str(s.id_sala)) for s in salas])
+
+            return {
+                'doctores': result_doctores,
+                'salas_options': salas_options,
+                'salas_filter': salas_filter
+            }
 
     def watch_doctores_data(self, doctores: List[Dict[str, Any]]) -> None:
         """React to changes in doctores data"""
@@ -431,7 +455,10 @@ class DoctoresScreen(Screen):
 
     def action_create_doctor(self) -> None:
         """Open modal to create a new doctor"""
-        self.app.push_screen(CrearDoctorModal(), self._handle_crear_doctor)
+        if not self.salas_options:
+            self.notify("❌ No hay salas disponibles", severity="error")
+            return
+        self.app.push_screen(CrearDoctorModal(self.salas_options), self._handle_crear_doctor)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses"""

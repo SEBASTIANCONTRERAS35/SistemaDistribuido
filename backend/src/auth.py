@@ -214,6 +214,29 @@ def init_all_salas_resources():
 
     NUM_SALAS = 4  # 4 salas de emergencia
 
+    # Nombres únicos por sala (sin sufijo S#)
+    doctores_por_sala = {
+        1: [("Dr. Ricardo Mendiola", "Medicina General"),
+            ("Dra. Elena Vázquez", "Urgencias"),
+            ("Dr. Samuel Kim", "Medicina Interna")],
+        2: [("Dr. Carlos Hernández", "Cardiología"),
+            ("Dra. María López", "Pediatría"),
+            ("Dr. Jorge Ramírez", "Traumatología")],
+        3: [("Dr. Fernando García", "Neurología"),
+            ("Dra. Ana Martínez", "Ginecología"),
+            ("Dr. Luis Pérez", "Oncología")],
+        4: [("Dr. Miguel Torres", "Oftalmología"),
+            ("Dra. Patricia Sánchez", "Dermatología"),
+            ("Dr. Roberto Díaz", "Psiquiatría")],
+    }
+
+    trabajadores_por_sala = {
+        1: "Lic. Roberto Gómez",
+        2: "Lic. María Fernández",
+        3: "Lic. Carlos Mendoza",
+        4: "Lic. Ana Patricia Ruiz",
+    }
+
     for sala_id in range(1, NUM_SALAS + 1):
         # 1. Crear sala
         sala = Sala(
@@ -224,15 +247,10 @@ def init_all_salas_resources():
         db.session.add(sala)
         db.session.flush()
 
-        # 2. Crear 3 doctores por sala (basado en poblardb.py)
-        doctores_base = [
-            ("Dr. Ricardo Mendiola", "Medicina General"),
-            ("Dra. Elena Vázquez", "Urgencias"),
-            ("Dr. Samuel Kim", "Medicina Interna")
-        ]
-        for nombre, especialidad in doctores_base:
+        # 2. Crear 3 doctores por sala
+        for nombre, especialidad in doctores_por_sala[sala_id]:
             doctor = Doctor(
-                nombre=f"{nombre} S{sala_id}",
+                nombre=nombre,
                 especialidad=especialidad,
                 id_sala=sala_id,
                 disponible=True,
@@ -243,7 +261,7 @@ def init_all_salas_resources():
         # 3. Crear 10 camas por sala (101-110, 201-210, etc.)
         for i in range(1, 11):
             cama = Cama(
-                numero=sala_id * 100 + i,  # 101-110, 201-210, etc.
+                numero=sala_id * 100 + i,
                 id_sala=sala_id,
                 ocupada=False
             )
@@ -251,10 +269,201 @@ def init_all_salas_resources():
 
         # 4. Crear 1 trabajador social por sala
         trabajador = TrabajadorSocial(
-            nombre=f"Lic. Roberto Gómez S{sala_id}",
+            nombre=trabajadores_por_sala[sala_id],
             id_sala=sala_id
         )
         db.session.add(trabajador)
 
     db.session.commit()
     print(f"[INIT] Recursos inicializados: {NUM_SALAS} salas x (3 doctores + 10 camas + 1 TS)")
+
+
+def init_sala_for_node(node_id: int):
+    """
+    Crea sala para este nodo si no existe.
+    Soporta N nodos = N salas dinámicamente.
+
+    Args:
+        node_id: ID del nodo (se usará como id_sala)
+    """
+    from models import db, Sala, Doctor, Cama, TrabajadorSocial
+
+    # Validación: node_id debe ser un entero válido
+    if node_id is None:
+        print("[INIT] ERROR: node_id es None, no se puede crear sala")
+        return
+
+    if not isinstance(node_id, int) or node_id < 1:
+        print(f"[INIT] ERROR: node_id inválido: {node_id}")
+        return
+
+    # Verificar si la sala ya existe (usando filter_by para evitar warning con None)
+    sala = Sala.query.filter_by(id_sala=node_id).first()
+    if sala:
+        print(f"[INIT] Sala {node_id} ya existe, usando existente")
+        return
+
+    # Crear la sala
+    sala = Sala(
+        id_sala=node_id,
+        numero=node_id,
+        activa=True
+    )
+    db.session.add(sala)
+    db.session.flush()
+
+    # Nombres únicos por sala (sin sufijo S#)
+    doctores_por_sala = {
+        1: [("Dr. Ricardo Mendiola", "Medicina General"),
+            ("Dra. Elena Vázquez", "Urgencias"),
+            ("Dr. Samuel Kim", "Medicina Interna")],
+        2: [("Dr. Carlos Hernández", "Cardiología"),
+            ("Dra. María López", "Pediatría"),
+            ("Dr. Jorge Ramírez", "Traumatología")],
+        3: [("Dr. Fernando García", "Neurología"),
+            ("Dra. Ana Martínez", "Ginecología"),
+            ("Dr. Luis Pérez", "Oncología")],
+        4: [("Dr. Miguel Torres", "Oftalmología"),
+            ("Dra. Patricia Sánchez", "Dermatología"),
+            ("Dr. Roberto Díaz", "Psiquiatría")],
+    }
+
+    # Fallback para nodos > 4
+    doctores_default = [
+        ("Dr. Médico General", "Medicina General"),
+        ("Dra. Especialista", "Urgencias"),
+        ("Dr. Residente", "Medicina Interna")
+    ]
+
+    doctores = doctores_por_sala.get(node_id, doctores_default)
+    for nombre, especialidad in doctores:
+        doctor = Doctor(
+            nombre=nombre,
+            especialidad=especialidad,
+            id_sala=node_id,
+            disponible=True,
+            activo=True
+        )
+        db.session.add(doctor)
+
+    # Crear 10 camas para esta sala (N01-N10, donde N es el node_id)
+    for i in range(1, 11):
+        cama = Cama(
+            numero=node_id * 100 + i,  # 101-110, 201-210, 501-510, etc.
+            id_sala=node_id,
+            ocupada=False
+        )
+        db.session.add(cama)
+
+    # Nombres únicos por sala para trabajadores sociales
+    trabajadores_por_sala = {
+        1: "Lic. Roberto Gómez",
+        2: "Lic. María Fernández",
+        3: "Lic. Carlos Mendoza",
+        4: "Lic. Ana Patricia Ruiz",
+    }
+
+    nombre_trabajador = trabajadores_por_sala.get(node_id, f"Lic. Trabajador Social {node_id}")
+    trabajador = TrabajadorSocial(
+        nombre=nombre_trabajador,
+        id_sala=node_id
+    )
+    db.session.add(trabajador)
+
+    db.session.commit()
+
+    # Crear usuarios para el personal recién creado
+    _crear_usuarios_para_sala(node_id)
+
+    print(f"[INIT] Sala {node_id} creada con 3 doctores, 10 camas, 1 trabajador social")
+
+
+def _crear_usuarios_para_sala(sala_id: int):
+    """Crea usuarios de login para el personal de una sala recién creada."""
+    from models import Doctor, TrabajadorSocial
+
+    # Crear usuarios para doctores de esta sala
+    doctores = Doctor.query.filter_by(id_sala=sala_id).all()
+    for doctor in doctores:
+        crear_usuario_para_personal('doctor', doctor.id_doctor, doctor.nombre)
+
+    # Crear usuario para trabajador social de esta sala
+    trabajadores = TrabajadorSocial.query.filter_by(id_sala=sala_id).all()
+    for trab in trabajadores:
+        crear_usuario_para_personal('trabajador_social', trab.id_trabajador, trab.nombre)
+
+
+def get_active_sala_ids(bully_manager=None):
+    """
+    Retorna IDs de salas cuyos nodos están activos en el cluster.
+    Incluye el nodo actual + todos los nodos en cluster_nodes.
+
+    Args:
+        bully_manager: Instancia de BullyNode (opcional)
+
+    Returns:
+        List[int]: Lista de IDs de salas activas en el cluster
+    """
+    from models import Sala
+
+    if bully_manager is None:
+        # Sin bully_manager, retornar todas las salas activas de BD
+        return [s.id_sala for s in Sala.query.filter_by(activa=True).all()]
+
+    # Incluir nodo actual + todos los nodos conocidos en el cluster
+    active_ids = {bully_manager.node_id}
+    # Crear copia para thread-safety
+    active_ids.update(dict(bully_manager.cluster_nodes).keys())
+    return list(active_ids)
+
+
+def get_all_salas(bully_manager=None):
+    """
+    Obtiene salas activas de la BD, filtradas por nodos activos del cluster.
+    Para uso en selectores dinámicos de UI.
+
+    Args:
+        bully_manager: Instancia de BullyNode para filtrar por nodos activos
+
+    Returns:
+        List[tuple]: Lista de (label, value) para Select widgets
+    """
+    from models import Sala
+
+    query = Sala.query.filter_by(activa=True)
+
+    # Filtrar por nodos activos si hay bully_manager
+    if bully_manager is not None:
+        active_ids = get_active_sala_ids(bully_manager)
+        if active_ids:
+            query = query.filter(Sala.id_sala.in_(active_ids))
+
+    salas = query.order_by(Sala.numero).all()
+    return [(f"Sala {s.numero}", s.id_sala) for s in salas]
+
+
+def get_all_salas_with_todas(bully_manager=None):
+    """
+    Obtiene salas activas + opción "Todas las salas", filtradas por nodos activos.
+    Para filtros en UI.
+
+    Args:
+        bully_manager: Instancia de BullyNode para filtrar por nodos activos
+
+    Returns:
+        List[tuple]: Lista de (label, value) para Select widgets
+    """
+    from models import Sala
+
+    query = Sala.query.filter_by(activa=True)
+
+    # Filtrar por nodos activos si hay bully_manager
+    if bully_manager is not None:
+        active_ids = get_active_sala_ids(bully_manager)
+        if active_ids:
+            query = query.filter(Sala.id_sala.in_(active_ids))
+
+    salas = query.order_by(Sala.numero).all()
+    options = [("Todas las salas", "todas")]
+    options.extend([(f"Sala {s.numero}", str(s.id_sala)) for s in salas])
+    return options

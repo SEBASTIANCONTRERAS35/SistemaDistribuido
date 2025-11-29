@@ -7,68 +7,84 @@ from typing import Dict, Any
 from datetime import datetime
 
 from textual.app import ComposeResult
-from textual.screen import ModalScreen
-from textual.widgets import Static, Input, Button, Label, Select
-from textual.containers import Container, Vertical, Horizontal
+from textual.screen import Screen
+from textual.widgets import Static, Input, Button, Label, Select, Footer
+from textual.containers import Container, Vertical, Horizontal, VerticalScroll
 from textual import work
 from textual.binding import Binding
 
 
-class SimpleCreateVisitScreen(ModalScreen):
+class SimpleCreateVisitScreen(Screen):
     """Simplified screen for creating emergency visits"""
 
     BINDINGS = [
-        Binding("escape", "dismiss", "Cancelar", show=True),
+        Binding("escape", "app.pop_screen", "Volver", show=True),
+        Binding("ctrl+s", "submit_form", "Crear Visita", show=True),
         Binding("down", "focus_next", "↓ Siguiente", show=False),
         Binding("up", "focus_previous", "↑ Anterior", show=False),
-        Binding("left", "focus_previous", "←", show=False),
-        Binding("right", "focus_next", "→", show=False),
     ]
 
     CSS = """
     SimpleCreateVisitScreen {
-        align: center middle;
-    }
-
-    #visit-container {
-        width: 90;
-        height: auto;
         background: $surface;
-        border: thick $primary;
-        padding: 2;
     }
 
-    #visit-title {
+    #visit-header {
+        background: $primary;
+        color: $surface;
+        padding: 0 1;
+        dock: top;
+        height: 3;
+        content-align: center middle;
+    }
+
+    #header-title {
         text-style: bold;
-        color: $primary;
+        color: $surface;
         text-align: center;
-        padding-bottom: 1;
-        border-bottom: solid $border;
-        margin-bottom: 1;
+    }
+
+    #form-container {
+        height: 1fr;
+        padding: 1 2;
     }
 
     .form-label {
-        color: $text-secondary;
-        padding: 1 0 0 0;
+        color: $text-muted;
+        height: 1;
     }
 
-    /* NOTE: Textual CSS doesn't support ::after pseudo-elements
-     * Required fields should have asterisk in label text directly */
     .form-label-required {
-        color: $error;
+        color: $warning;
+        text-style: bold;
+        height: 1;
     }
 
     Input {
-        margin: 0 0 1 0;
+        height: 3;
     }
 
     Select {
-        margin: 0 0 1 0;
+        height: 3;
+    }
+
+    #row-edad-sexo {
+        height: 4;
+    }
+
+    #col-edad {
+        width: 1fr;
+        margin-right: 1;
+    }
+
+    #col-sexo {
+        width: 2fr;
     }
 
     #button-container {
         align: center middle;
-        margin-top: 2;
+        margin-top: 1;
+        height: 3;
     }
 
     Button {
@@ -79,8 +95,7 @@ class SimpleCreateVisitScreen(ModalScreen):
         color: $error;
         text-style: bold;
         text-align: center;
-        margin: 1 0;
-        min-height: 1;
+        height: 1;
     }
     """
 
@@ -132,49 +147,60 @@ class SimpleCreateVisitScreen(ModalScreen):
             f.write("\n\n")
 
     def compose(self) -> ComposeResult:
-        """Compose the create visit form"""
-        with Container(id="visit-container"):
-            yield Label("🏥 NUEVA VISITA DE EMERGENCIA", id="visit-title")
+        """Compose the create visit form - optimized for small terminals"""
+        # Header compacto
+        with Container(id="visit-header"):
+            yield Label("🏥 NUEVA VISITA DE EMERGENCIA", id="header-title")
 
-            # Patient Information
-            yield Label("DATOS DEL PACIENTE", classes="form-label-required")
+        # Form container con scroll
+        with VerticalScroll(id="form-container"):
+            # Nombre
+            yield Label("Nombre *", classes="form-label-required")
             yield Input(placeholder="Nombre completo", id="input-nombre")
 
-            yield Label("Edad *", classes="form-label")
-            yield Input(placeholder="Edad (años)", id="input-edad")
+            # Edad + Sexo en una fila
+            with Horizontal(id="row-edad-sexo"):
+                with Vertical(id="col-edad"):
+                    yield Label("Edad *", classes="form-label")
+                    yield Input(placeholder="Años", id="input-edad")
+                with Vertical(id="col-sexo"):
+                    yield Label("Sexo *", classes="form-label")
+                    yield Select(
+                        options=[("Masculino", "M"), ("Femenino", "F")],
+                        prompt="Sexo",
+                        id="select-sexo",
+                        allow_blank=False
+                    )
 
-            yield Label("Sexo *", classes="form-label")
-            yield Select(
-                options=[
-                    ("Masculino", "M"),
-                    ("Femenino", "F"),
-                ],
-                prompt="Seleccione sexo",
-                id="select-sexo",
-                allow_blank=False
-            )
-
+            # CURP
             yield Label("CURP (opcional)", classes="form-label")
             yield Input(placeholder="CURP", id="input-curp")
 
-            # Symptoms
+            # Síntomas
             yield Label("Síntomas *", classes="form-label")
-            yield Input(placeholder="Describa los síntomas", id="input-sintomas")
+            yield Input(placeholder="Describa síntomas", id="input-sintomas")
 
             # Error message
             yield Static("", id="error-message")
 
-            # Buttons
+            # Botones compactos
             with Horizontal(id="button-container"):
-                yield Button("✓ Crear Visita", variant="success", id="btn-create")
-                yield Button("Cancelar", variant="error", id="btn-cancel")
+                yield Button("✓ Crear", variant="success", id="btn-create")
+                yield Button("✗ Cancelar", variant="error", id="btn-cancel")
+
+        # Footer (sin status-bar adicional)
+        yield Footer()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses"""
         if event.button.id == "btn-create":
             self.create_visit()
         elif event.button.id == "btn-cancel":
-            self.dismiss(None)
+            self.app.pop_screen()
+
+    def action_submit_form(self) -> None:
+        """Action for Ctrl+S binding"""
+        self.create_visit()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Enter en último campo crea visita, otros campos avanzan"""
@@ -243,7 +269,13 @@ class SimpleCreateVisitScreen(ModalScreen):
             )
 
             if result['success']:
-                self.dismiss(result)
+                self.notify(
+                    f"✅ Visita creada: {result['folio']}\n"
+                    f"Sala {result['sala']} | Dr. {result['doctor']} | Cama #{result['cama']}",
+                    severity="information",
+                    timeout=8
+                )
+                self.app.pop_screen()
             else:
                 error_widget.update(f"❌ {result['error']}")
 
@@ -280,6 +312,7 @@ class SimpleCreateVisitScreen(ModalScreen):
                 get_doctores_disponibles, get_camas_disponibles,
                 elegir_sala_menos_carga
             )
+            from auth import get_active_sala_ids
             from bully.distributed_locks import (
                 solicitar_bloqueo_con_orden,
                 liberar_todos_bloqueos
@@ -300,9 +333,13 @@ class SimpleCreateVisitScreen(ModalScreen):
                 logger.warning(f"║  Paciente: {nombre[:30]:<30}                    ║")
                 logger.warning(f"╚══════════════════════════════════════════════════════════════╝")
 
+                # Obtener salas de nodos activos en el cluster
+                active_salas = get_active_sala_ids(self.bully_manager)
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Salas activas en cluster: {active_salas}")
+
                 # ====== PASO 1: Seleccionar sala con menor carga ======
                 logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paso 1: Evaluando carga de salas...")
-                sala_destino = elegir_sala_menos_carga()
+                sala_destino = elegir_sala_menos_carga(active_salas=active_salas)
 
                 if not sala_destino:
                     logger.error(f"[Node-{node_id}] [2PC-VISIT] No hay salas con recursos disponibles")
@@ -310,9 +347,9 @@ class SimpleCreateVisitScreen(ModalScreen):
 
                 logger.warning(f"[Node-{node_id}] [2PC-VISIT] Sala elegida: {sala_destino}")
 
-                # ====== PASO 2: Buscar recursos disponibles ======
-                doctores = get_doctores_disponibles(id_sala=sala_destino)
-                camas = get_camas_disponibles(id_sala=sala_destino)
+                # ====== PASO 2: Buscar recursos disponibles en salas activas ======
+                doctores = get_doctores_disponibles(id_sala=sala_destino, active_salas=active_salas)
+                camas = get_camas_disponibles(id_sala=sala_destino, active_salas=active_salas)
                 logger.warning(f"[Node-{node_id}] [2PC-VISIT] Sala {sala_destino}: {len(doctores)} doctores, {len(camas)} camas")
 
                 if not doctores:

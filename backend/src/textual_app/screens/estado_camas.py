@@ -121,8 +121,16 @@ class EstadoCamasScreen(Screen):
         """Fetch beds from database"""
         with self.flask_app.app_context():
             from models import Cama, Paciente
+            from auth import get_active_sala_ids
 
-            camas = Cama.query.order_by(Cama.id_sala, Cama.numero).all()
+            # Obtener salas de nodos activos en el cluster
+            active_salas = get_active_sala_ids(self.bully_manager)
+
+            query = Cama.query
+            if active_salas:
+                query = query.filter(Cama.id_sala.in_(active_salas))
+
+            camas = query.order_by(Cama.id_sala, Cama.numero).all()
             result = []
 
             for cama in camas:

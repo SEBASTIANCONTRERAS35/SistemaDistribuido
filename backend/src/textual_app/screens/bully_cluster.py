@@ -121,7 +121,7 @@ class BullyClusterScreen(Screen):
         color: $surface;
         padding: 1 2;
         dock: top;
-        height: 7;
+        height: 5;
     }
 
     #header-title {
@@ -172,11 +172,10 @@ class BullyClusterScreen(Screen):
 
     #status-bar {
         background: $panel;
-        color: $text-secondary;
+        color: $text-muted;
         padding: 0 2;
         dock: bottom;
-        height: 3;
-        text-align: center;
+        height: 1;
     }
 
     #election-warning {
@@ -400,18 +399,17 @@ class BullyClusterScreen(Screen):
         status_text.append("Leader: ", style="dim")
         status_text.append(leader_text, style="bold green")
         status_text.append(" | ", style="dim")
-        status_text.append("Cluster Size: ", style="dim")
         status_text.append(f"{cluster_size} nodes", style="bold cyan")
         status_text.append(" | ", style="dim")
-        status_text.append("Your State: ", style="dim")
+        status_text.append("Estado: ", style="dim")
 
         if data['state'] == 'leader':
             status_text.append(your_state, style="bold green")
         else:
             status_text.append(your_state, style="bold cyan")
 
-        status_text.append("\n")
-        status_text.append(f"Last updated: {datetime.now().strftime('%H:%M:%S')}", style="dim italic")
+        status_text.append(" | ", style="dim")
+        status_text.append(f"{datetime.now().strftime('%H:%M:%S')}", style="dim italic")
 
         status_bar.update(status_text)
 

@@ -72,8 +72,9 @@ class CrearTrabajadorModal(ModalScreen[Dict[str, Any]]):
     }
     """
 
-    def __init__(self):
+    def __init__(self, salas_options: List[tuple]):
         super().__init__()
+        self.salas_options = salas_options
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-container"):
@@ -83,16 +84,13 @@ class CrearTrabajadorModal(ModalScreen[Dict[str, Any]]):
             yield Input(placeholder="Ej: Lic. María García", id="input-nombre")
 
             yield Label("Sala asignada:", classes="field-label")
+            # Selector dinámico de salas desde BD
+            default_value = self.salas_options[0][1] if self.salas_options else 1
             yield Select(
-                options=[
-                    ("Sala 1", 1),
-                    ("Sala 2", 2),
-                    ("Sala 3", 3),
-                    ("Sala 4", 4),
-                ],
+                options=self.salas_options,
                 id="select-sala",
                 allow_blank=False,
-                value=1
+                value=default_value
             )
 
             with Horizontal(id="buttons"):
@@ -519,14 +517,27 @@ class TrabajadoresScreen(Screen):
         """Fetch trabajadores from database (runs in thread pool)"""
         with self.flask_app.app_context():
             from models import TrabajadorSocial, VisitaEmergencia, Sala
+            from auth import get_active_sala_ids
             from sqlalchemy.orm import joinedload
 
-            trabajadores = TrabajadorSocial.query.options(
-                joinedload(TrabajadorSocial.sala)
-            ).filter_by(activo=True).order_by(TrabajadorSocial.nombre).all()
+            # Obtener salas de nodos activos en el cluster
+            active_salas = get_active_sala_ids(self.bully_manager)
 
-            # Also fetch salas for edit modal
-            salas = Sala.query.filter_by(activa=True).order_by(Sala.numero).all()
+            # Query con filtro por salas activas
+            query = TrabajadorSocial.query.options(
+                joinedload(TrabajadorSocial.sala)
+            ).filter_by(activo=True)
+
+            if active_salas:
+                query = query.filter(TrabajadorSocial.id_sala.in_(active_salas))
+
+            trabajadores = query.order_by(TrabajadorSocial.nombre).all()
+
+            # Also fetch salas for edit modal (solo activas en cluster)
+            query_salas = Sala.query.filter_by(activa=True)
+            if active_salas:
+                query_salas = query_salas.filter(Sala.id_sala.in_(active_salas))
+            salas = query_salas.order_by(Sala.numero).all()
 
             result_trabajadores = []
             for trab in trabajadores:
@@ -608,7 +619,12 @@ class TrabajadoresScreen(Screen):
 
     def action_create_trabajador(self) -> None:
         """Open modal to create a new trabajador social"""
-        self.app.push_screen(CrearTrabajadorModal(), self._handle_crear_trabajador)
+        # Convertir salas a formato para Select
+        salas_options = [(f"Sala {s['numero']}", s['id_sala']) for s in self.salas]
+        if not salas_options:
+            self.notify("❌ No hay salas disponibles", severity="error")
+            return
+        self.app.push_screen(CrearTrabajadorModal(salas_options), self._handle_crear_trabajador)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses"""

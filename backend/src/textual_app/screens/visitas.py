@@ -400,20 +400,12 @@ class VisitasScreen(Screen):
 
         from .simple_create_visit import SimpleCreateVisitScreen
 
-        def handle_result(result):
-            """Handle visit creation result"""
-            if result and result.get('success'):
-                self.notify(
-                    f"✓ Visita {result['folio']} creada\nSala: {result.get('sala', '?')}\nDoctor: {result['doctor']}\nCama: {result['cama']}",
-                    title="Visita Creada",
-                    severity="information",
-                    timeout=5
-                )
-                # Refresh table
-                self.load_visitas()
-
         screen = SimpleCreateVisitScreen(self.flask_app, self.bully_manager, self.username, self.user_info)
-        self.app.push_screen(screen, handle_result)
+        self.app.push_screen(screen)
+
+    def on_screen_resume(self) -> None:
+        """Called when returning to this screen - refresh data"""
+        self.load_visitas()
 
     def action_show_cluster(self) -> None:
         """Show Bully cluster visualization"""
