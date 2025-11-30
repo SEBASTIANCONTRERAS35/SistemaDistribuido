@@ -133,17 +133,63 @@ def create_bully_manager(app):
     return bully_manager
 
 
+def start_cluster_services(app, bully_manager):
+    """
+    Inicia los servicios del cluster: API REST y sincronización.
+
+    Args:
+        app: Aplicación Flask
+        bully_manager: Instancia de BullyNode
+
+    Returns:
+        DataSynchronizer: Instancia del sincronizador
+    """
+    import time
+    from config import Config
+    from app_factory import start_cluster_api_server
+    from bully.data_sync import init_synchronizer
+
+    # 1. Iniciar servidor API Flask para endpoints del cluster
+    logger.info(f"Starting Cluster API server on port {Config.FLASK_PORT}...")
+    start_cluster_api_server(app, host='0.0.0.0', port=Config.FLASK_PORT)
+
+    # 2. Inicializar el sincronizador de datos
+    synchronizer = init_synchronizer(app, bully_manager)
+    logger.info("Data synchronizer initialized")
+
+    # 3. Esperar un momento para que el discovery encuentre otros nodos
+    logger.info("Waiting for cluster discovery (5 seconds)...")
+    time.sleep(5)
+
+    # 4. Realizar sincronización inicial desde otros nodos
+    if bully_manager.cluster_nodes:
+        logger.info(f"Found {len(bully_manager.cluster_nodes)} nodes, attempting initial sync...")
+        with app.app_context():
+            sync_result = synchronizer.perform_initial_sync(timeout=10.0)
+            if sync_result:
+                logger.info("Initial data synchronization completed successfully")
+            else:
+                logger.warning("Initial sync failed or no data to sync - continuing with local data")
+    else:
+        logger.info("No other nodes found - this is the first node in the cluster")
+
+    return synchronizer
+
+
 def main():
     """Main entry point"""
     try:
         # Setup
         setup_environment()
-        
+
         # Create Flask app context
         app = create_flask_app()
-        
+
         # Create Bully manager
         bully_manager = create_bully_manager(app)
+
+        # Start cluster services (API server + data sync)
+        synchronizer = start_cluster_services(app, bully_manager)
 
         # Import Textual app
         from textual_app import MedicalApp

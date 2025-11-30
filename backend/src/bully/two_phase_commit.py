@@ -286,7 +286,60 @@ class TwoPhaseCommitCoordinator:
         success = commit_acks >= required_acks or len(otros_nodos) == 0
 
         logger.info(f"[2PC] COMMIT phase: {commit_acks}/{len(otros_nodos)} acks (needed {required_acks})")
+
+        # Replicación HTTP como fallback para nodos que no respondieron al 2PC
+        # Esto asegura que los datos lleguen incluso si el TCP falló
+        if success and txn.operation == 'CREATE_VISIT':
+            self._replicate_visit_http_fallback(local_result, commit_acks, len(otros_nodos))
+
         return {'success': success}
+
+    def _replicate_visit_http_fallback(self, local_result: Dict, commit_acks: int, total_nodes: int):
+        """
+        Replica visita vía HTTP como fallback si algunos nodos no confirmaron por TCP.
+
+        Args:
+            local_result: Resultado del commit local con datos de la visita
+            commit_acks: Número de nodos que confirmaron por TCP
+            total_nodes: Total de nodos en el cluster
+        """
+        # Solo usar fallback si hay nodos que no confirmaron
+        if commit_acks >= total_nodes:
+            return
+
+        try:
+            from models import replicate_visit_to_cluster
+
+            visita_data = local_result.get('data', {})
+            if not visita_data or not visita_data.get('folio'):
+                return
+
+            # Construir datos completos para replicación HTTP
+            replication_data = {
+                'folio': visita_data.get('folio'),
+                'id_paciente': visita_data.get('id_paciente'),
+                'id_doctor': visita_data.get('id_doctor'),
+                'id_cama': visita_data.get('id_cama'),
+                'id_sala': visita_data.get('id_sala'),
+                'sintomas': visita_data.get('sintomas'),
+                'diagnostico': visita_data.get('diagnostico'),
+                'tratamiento': visita_data.get('tratamiento'),
+                'activa': visita_data.get('activa', True),
+                'fecha_entrada': visita_data.get('fecha_entrada'),
+                'fecha_salida': visita_data.get('fecha_salida'),
+                'paciente': visita_data.get('paciente')
+            }
+
+            result = replicate_visit_to_cluster(
+                self.bully_manager,
+                replication_data,
+                exclude_node_id=self.bully_manager.node_id
+            )
+
+            logger.info(f"[2PC] HTTP fallback replication: {result['success_count']}/{result['total_nodes']} nodes")
+
+        except Exception as e:
+            logger.warning(f"[2PC] HTTP fallback replication failed: {e}")
 
     def _abort_phase(self, txn: Transaction) -> None:
         """
