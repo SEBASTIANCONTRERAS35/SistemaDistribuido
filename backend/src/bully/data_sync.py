@@ -248,12 +248,12 @@ class DataSynchronizer:
                     id_doctor=vis_data.get('id_doctor'),
                     id_cama=vis_data.get('id_cama'),
                     id_sala=vis_data['id_sala'],
+                    id_trabajador=vis_data.get('id_trabajador'),
                     sintomas=vis_data.get('sintomas'),
                     diagnostico=vis_data.get('diagnostico'),
-                    tratamiento=vis_data.get('tratamiento'),
-                    activa=vis_data.get('activa', True),
-                    fecha_entrada=datetime.fromisoformat(vis_data['fecha_entrada']) if vis_data.get('fecha_entrada') else datetime.now(),
-                    fecha_salida=datetime.fromisoformat(vis_data['fecha_salida']) if vis_data.get('fecha_salida') else None
+                    estado=vis_data.get('estado', 'activa'),
+                    timestamp=datetime.fromisoformat(vis_data['timestamp']) if vis_data.get('timestamp') else datetime.now(),
+                    fecha_cierre=datetime.fromisoformat(vis_data['fecha_cierre']) if vis_data.get('fecha_cierre') else None
                 )
                 db.session.add(visita)
                 sync_logger.debug(f"Added visita {vis_data['folio']}")
@@ -261,16 +261,19 @@ class DataSynchronizer:
         # 7. Sincronizar Consecutivos (para mantener secuencia de folios)
         consecutivos = sync_data.get('consecutivos', [])
         for cons_data in consecutivos:
-            existing = Consecutivo.query.filter_by(id_sala=cons_data['id_sala']).first()
+            # Consecutivo usa fecha + id_sala como clave
+            fecha = datetime.fromisoformat(cons_data['fecha']).date() if cons_data.get('fecha') else datetime.now().date()
+            existing = Consecutivo.query.filter_by(id_sala=cons_data['id_sala'], fecha=fecha).first()
             if existing:
                 # Actualizar solo si el consecutivo remoto es mayor
-                if cons_data['ultimo_consecutivo'] > existing.ultimo_consecutivo:
-                    existing.ultimo_consecutivo = cons_data['ultimo_consecutivo']
+                if cons_data.get('consecutivo', 0) > existing.consecutivo:
+                    existing.consecutivo = cons_data['consecutivo']
                     sync_logger.debug(f"Updated consecutivo for sala {cons_data['id_sala']}")
             else:
                 consecutivo = Consecutivo(
                     id_sala=cons_data['id_sala'],
-                    ultimo_consecutivo=cons_data['ultimo_consecutivo']
+                    fecha=fecha,
+                    consecutivo=cons_data.get('consecutivo', 0)
                 )
                 db.session.add(consecutivo)
                 sync_logger.debug(f"Added consecutivo for sala {cons_data['id_sala']}")

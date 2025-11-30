@@ -23,7 +23,7 @@ class ListaTrabajadoresScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Volver", show=True),
-        Binding("r", "refresh", "Actualizar", show=True),
+        Binding("ctrl+r", "refresh", "Actualizar", show=True),
         Binding("down", "focus_next", show=False),
         Binding("up", "focus_previous", show=False),
     ]
@@ -70,7 +70,7 @@ class ListaTrabajadoresScreen(Screen):
     def compose(self) -> ComposeResult:
         """Compose the screen UI - Compact, no toolbar"""
         with Container(id="header-container"):
-            yield Label("TRABAJADORES SOCIALES | r:Actualizar | esc:Volver", id="header-title")
+            yield Label("TRABAJADORES SOCIALES | ctrl+r:Actualizar | esc:Volver", id="header-title")
 
         yield DataTable(id="trabajadores-table", zebra_stripes=True)
         yield Static("Cargando...", id="status-bar")

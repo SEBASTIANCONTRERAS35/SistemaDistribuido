@@ -143,8 +143,8 @@ def register_cluster_endpoints(app):
             doctors_total = Doctor.query.filter_by(activo=True).count()
             beds_available = Cama.query.filter_by(ocupada=False).count()
             beds_total = Cama.query.count()
-            visits_active = VisitaEmergencia.query.filter_by(activa=True).count()
-            visits_completed = VisitaEmergencia.query.filter_by(activa=False).count()
+            visits_active = VisitaEmergencia.query.filter_by(estado='activa').count()
+            visits_completed = VisitaEmergencia.query.filter_by(estado='completada').count()
 
             return jsonify({
                 'node_id': Config.NODE_ID,
@@ -205,12 +205,12 @@ def register_cluster_endpoints(app):
                 id_doctor=data.get('id_doctor'),
                 id_cama=data.get('id_cama'),
                 id_sala=data.get('id_sala'),
+                id_trabajador=data.get('id_trabajador'),
                 sintomas=data.get('sintomas'),
                 diagnostico=data.get('diagnostico'),
-                tratamiento=data.get('tratamiento'),
-                activa=data.get('activa', True),
-                fecha_entrada=datetime.fromisoformat(data['fecha_entrada']) if data.get('fecha_entrada') else datetime.now(),
-                fecha_salida=datetime.fromisoformat(data['fecha_salida']) if data.get('fecha_salida') else None
+                estado=data.get('estado', 'activa'),
+                timestamp=datetime.fromisoformat(data['timestamp']) if data.get('timestamp') else datetime.now(),
+                fecha_cierre=datetime.fromisoformat(data['fecha_cierre']) if data.get('fecha_cierre') else None
             )
 
             db.session.add(visita)
@@ -283,12 +283,12 @@ def register_cluster_endpoints(app):
                 'id_doctor': v.id_doctor,
                 'id_cama': v.id_cama,
                 'id_sala': v.id_sala,
+                'id_trabajador': v.id_trabajador,
                 'sintomas': v.sintomas,
                 'diagnostico': v.diagnostico,
-                'tratamiento': v.tratamiento,
-                'activa': v.activa,
-                'fecha_entrada': v.fecha_entrada.isoformat() if v.fecha_entrada else None,
-                'fecha_salida': v.fecha_salida.isoformat() if v.fecha_salida else None,
+                'estado': v.estado,
+                'timestamp': v.timestamp.isoformat() if v.timestamp else None,
+                'fecha_cierre': v.fecha_cierre.isoformat() if v.fecha_cierre else None,
                 'paciente': {
                     'id_paciente': v.paciente.id_paciente,
                     'nombre': v.paciente.nombre,
@@ -302,7 +302,8 @@ def register_cluster_endpoints(app):
             consecutivos = [{
                 'id': c.id,
                 'id_sala': c.id_sala,
-                'ultimo_consecutivo': c.ultimo_consecutivo
+                'fecha': c.fecha.isoformat() if c.fecha else None,
+                'consecutivo': c.consecutivo
             } for c in Consecutivo.query.all()]
 
             cluster_logger.info(f"[API] Full-sync response: {len(salas)} salas, {len(doctores)} doctores, "
@@ -349,17 +350,15 @@ def register_cluster_endpoints(app):
                 return jsonify({'status': 'not_found', 'folio': folio}), 404
 
             # Actualizar campos
-            if 'activa' in data:
-                visita.activa = data['activa']
+            if 'estado' in data:
+                visita.estado = data['estado']
             if 'diagnostico' in data:
                 visita.diagnostico = data['diagnostico']
-            if 'tratamiento' in data:
-                visita.tratamiento = data['tratamiento']
-            if data.get('fecha_salida'):
-                visita.fecha_salida = datetime.fromisoformat(data['fecha_salida'])
+            if data.get('fecha_cierre'):
+                visita.fecha_cierre = datetime.fromisoformat(data['fecha_cierre'])
 
             # Si la visita se cierra, liberar cama y doctor
-            if not visita.activa:
+            if visita.estado == 'completada':
                 if visita.cama:
                     visita.cama.ocupada = False
                     visita.cama.id_paciente = None

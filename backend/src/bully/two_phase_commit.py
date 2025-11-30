@@ -323,10 +323,9 @@ class TwoPhaseCommitCoordinator:
                 'id_sala': visita_data.get('id_sala'),
                 'sintomas': visita_data.get('sintomas'),
                 'diagnostico': visita_data.get('diagnostico'),
-                'tratamiento': visita_data.get('tratamiento'),
-                'activa': visita_data.get('activa', True),
-                'fecha_entrada': visita_data.get('fecha_entrada'),
-                'fecha_salida': visita_data.get('fecha_salida'),
+                'estado': visita_data.get('estado', 'activa'),
+                'timestamp': visita_data.get('timestamp'),
+                'fecha_cierre': visita_data.get('fecha_cierre'),
                 'paciente': visita_data.get('paciente')
             }
 

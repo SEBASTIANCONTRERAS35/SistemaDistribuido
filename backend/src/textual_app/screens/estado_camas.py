@@ -23,7 +23,7 @@ class EstadoCamasScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Volver", show=True),
-        Binding("r", "refresh", "Actualizar", show=True),
+        Binding("ctrl+r", "refresh", "Actualizar", show=True),
         Binding("down", "focus_next", show=False),
         Binding("up", "focus_previous", show=False),
     ]
@@ -70,7 +70,7 @@ class EstadoCamasScreen(Screen):
     def compose(self) -> ComposeResult:
         """Compose the screen UI - Compact, no toolbar"""
         with Container(id="header-container"):
-            yield Label("CAMAS (Solo Lectura) | r:Actualizar | esc:Volver", id="header-title")
+            yield Label("CAMAS (Solo Lectura) | ctrl+r:Actualizar | esc:Volver", id="header-title")
 
         yield DataTable(id="camas-table", zebra_stripes=True)
         yield Static("Cargando...", id="status-bar")

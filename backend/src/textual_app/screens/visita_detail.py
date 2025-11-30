@@ -9,12 +9,10 @@ from typing import Dict, Any
 
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
-from textual.widgets import Static, Button, Label
-from textual.containers import Container, Vertical, Horizontal, Grid
+from textual.widgets import Button, Label
+from textual.containers import Container, Vertical, Horizontal
 from textual.binding import Binding
 from textual import work
-from rich.text import Text
-from rich.panel import Panel
 
 
 class VisitDetailModal(ModalScreen):
@@ -30,24 +28,25 @@ class VisitDetailModal(ModalScreen):
     }
 
     #detail-container {
-        width: 80;
+        width: 70;
         height: auto;
         max-height: 90%;
         background: $surface;
         border: thick $primary;
-        padding: 2;
+        padding: 1 2;
     }
 
     #detail-title {
         text-style: bold;
         color: $primary;
         text-align: center;
-        padding-bottom: 1;
+        height: 2;
         border-bottom: solid $border;
         margin-bottom: 1;
     }
 
     .detail-section {
+        height: auto;
         margin: 1 0;
         padding: 1;
         background: $panel;
@@ -57,28 +56,18 @@ class VisitDetailModal(ModalScreen):
     .section-title {
         text-style: bold;
         color: $primary;
-        margin-bottom: 1;
+        height: 1;
     }
 
-    .field-label {
-        color: $text-secondary;
-        width: 20;
-    }
-
-    .field-value {
-        color: $text;
-        text-style: bold;
-        min-width: 20;
-    }
-
-    .field-row {
-        height: auto;
-        margin: 0 0 1 0;
+    .field-line {
+        height: 1;
+        margin: 0;
     }
 
     #button-container {
+        height: 3;
         align: center middle;
-        margin-top: 2;
+        margin-top: 1;
     }
 
     #close-btn {
@@ -89,25 +78,17 @@ class VisitDetailModal(ModalScreen):
         margin: 0 1;
     }
 
-    .estado-badge {
-        padding: 0 2;
-        text-align: center;
-    }
-
     .estado-activa {
-        background: $success;
-        color: $surface;
+        color: $success;
         text-style: bold;
     }
 
     .estado-completada {
-        background: $panel;
-        color: $text;
+        color: $text-muted;
     }
 
     .estado-cancelada {
-        background: $error;
-        color: $surface;
+        color: $error;
         text-style: bold;
     }
     """
@@ -119,16 +100,6 @@ class VisitDetailModal(ModalScreen):
         self.bully_manager = bully_manager
         self.username = username
         self.user_info = user_info or {}
-
-        # DEBUG: Log visita data
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(f"[DETALLE-MODAL] Inicializando modal con visita: {visita.get('folio')}")
-        logger.warning(f"[DETALLE-MODAL] Keys en visita dict: {list(visita.keys())}")
-        logger.warning(f"[DETALLE-MODAL] paciente={repr(visita.get('paciente'))}")
-        logger.warning(f"[DETALLE-MODAL] doctor={repr(visita.get('doctor'))}")
-        logger.warning(f"[DETALLE-MODAL] sala={repr(visita.get('sala'))}")
-        logger.warning(f"[DETALLE-MODAL] cama={repr(visita.get('cama'))}")
 
     def _puede_cerrar_visita(self) -> bool:
         """Determina si el usuario actual puede cerrar esta visita.
@@ -186,17 +157,25 @@ class VisitDetailModal(ModalScreen):
             f.write("\n\n")
 
     def compose(self) -> ComposeResult:
-        """Compose the detail modal UI"""
-        import logging
-        logger = logging.getLogger(__name__)
+        """Compose the detail modal UI - Simplified layout for reliability"""
+        # Extraer valores
+        paciente_nombre = self.visita.get('paciente', 'N/A') or 'N/A'
+        doctor_nombre = self.visita.get('doctor', 'N/A') or 'N/A'
+        sala_num = str(self.visita.get('sala', 'N/A') or 'N/A')
+        cama_num = str(self.visita.get('cama', 'N/A') or 'N/A')
+        estado = self.visita.get('estado', 'desconocido') or 'desconocido'
+        sintomas = self.visita.get('sintomas', 'N/A') or 'N/A'
 
-        # Extraer valores para logging
-        paciente_nombre = self.visita.get('paciente', 'N/A')
-        doctor_nombre = self.visita.get('doctor', 'N/A')
-        sala_num = str(self.visita.get('sala', 'N/A'))
-        cama_num = str(self.visita.get('cama', 'N/A'))
-
-        logger.warning(f"[COMPOSE] Creando Labels con: paciente='{paciente_nombre}', doctor='{doctor_nombre}', sala='{sala_num}', cama='{cama_num}'")
+        # Format timestamp
+        timestamp = self.visita.get('timestamp', '')
+        if timestamp:
+            try:
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                timestamp_formatted = dt.strftime('%d/%m/%Y %H:%M:%S')
+            except:
+                timestamp_formatted = str(timestamp)
+        else:
+            timestamp_formatted = 'N/A'
 
         with Container(id="detail-container"):
             # Title
@@ -205,60 +184,27 @@ class VisitDetailModal(ModalScreen):
                 id="detail-title"
             )
 
-            # Patient section
+            # Patient section - usando Labels simples
             with Vertical(classes="detail-section"):
-                yield Label("👤 INFORMACIÓN DEL PACIENTE", classes="section-title")
-
-                with Horizontal(classes="field-row"):
-                    yield Label("Nombre:", classes="field-label")
-                    yield Static(paciente_nombre, classes="field-value")
+                yield Label("👤 PACIENTE", classes="section-title")
+                yield Label(f"  Nombre: {paciente_nombre}", classes="field-line")
 
             # Medical staff section
             with Vertical(classes="detail-section"):
-                yield Label("👨‍⚕️ PERSONAL MÉDICO", classes="section-title")
-
-                with Horizontal(classes="field-row"):
-                    yield Label("Doctor asignado:", classes="field-label")
-                    yield Static(doctor_nombre, classes="field-value")
+                yield Label("👨‍⚕️ DOCTOR", classes="section-title")
+                yield Label(f"  Asignado: {doctor_nombre}", classes="field-line")
 
             # Location section
             with Vertical(classes="detail-section"):
                 yield Label("🏥 UBICACIÓN", classes="section-title")
-
-                with Horizontal(classes="field-row"):
-                    yield Label("Sala:", classes="field-label")
-                    yield Static(sala_num, classes="field-value")
-
-                with Horizontal(classes="field-row"):
-                    yield Label("Cama:", classes="field-label")
-                    yield Static(cama_num, classes="field-value")
+                yield Label(f"  Sala: {sala_num}  |  Cama: {cama_num}", classes="field-line")
 
             # Clinical info section
             with Vertical(classes="detail-section"):
                 yield Label("📝 INFORMACIÓN CLÍNICA", classes="section-title")
-
-                # Estado with color badge
-                estado = self.visita.get('estado', 'desconocido')
-                estado_classes = f"estado-badge estado-{estado}"
-
-                with Horizontal(classes="field-row"):
-                    yield Label("Estado:", classes="field-label")
-                    yield Label(estado.upper(), classes=estado_classes)
-
-                # Timestamps
-                timestamp = self.visita.get('timestamp', '')
-                if timestamp:
-                    try:
-                        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                        timestamp_formatted = dt.strftime('%d/%m/%Y %H:%M:%S')
-                    except:
-                        timestamp_formatted = timestamp
-                else:
-                    timestamp_formatted = 'N/A'
-
-                with Horizontal(classes="field-row"):
-                    yield Label("Fecha de ingreso:", classes="field-label")
-                    yield Static(timestamp_formatted, classes="field-value")
+                yield Label(f"  Estado: {estado.upper()}", classes=f"field-line estado-{estado}")
+                yield Label(f"  Ingreso: {timestamp_formatted}", classes="field-line")
+                yield Label(f"  Síntomas: {sintomas[:40]}", classes="field-line")
 
                 # Fecha cierre (if exists)
                 fecha_cierre = self.visita.get('fecha_cierre', '')
@@ -267,23 +213,13 @@ class VisitDetailModal(ModalScreen):
                         dt = datetime.fromisoformat(fecha_cierre.replace('Z', '+00:00'))
                         cierre_formatted = dt.strftime('%d/%m/%Y %H:%M:%S')
                     except:
-                        cierre_formatted = fecha_cierre
-
-                    with Horizontal(classes="field-row"):
-                        yield Label("Fecha de cierre:", classes="field-label")
-                        yield Static(cierre_formatted, classes="field-value")
-
-                # Sintomas
-                with Horizontal(classes="field-row"):
-                    yield Label("Síntomas:", classes="field-label")
-                    yield Static(self.visita.get('sintomas', 'N/A'), classes="field-value")
+                        cierre_formatted = str(fecha_cierre)
+                    yield Label(f"  Cierre: {cierre_formatted}", classes="field-line")
 
                 # Diagnostico (si existe)
                 diagnostico = self.visita.get('diagnostico')
                 if diagnostico:
-                    with Horizontal(classes="field-row"):
-                        yield Label("Diagnóstico:", classes="field-label")
-                        yield Static(diagnostico, classes="field-value")
+                    yield Label(f"  Diagnóstico: {diagnostico[:40]}", classes="field-line")
 
             # Buttons
             with Horizontal(id="button-container"):

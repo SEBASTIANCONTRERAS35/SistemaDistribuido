@@ -425,8 +425,8 @@ def propagate_visit_update(mapper, connection, target):
     if _is_replicating:
         return
 
-    # Solo propagar si la visita fue cerrada (activa cambió a False)
-    if not target.activa and target.folio:
+    # Solo propagar si la visita fue cerrada (estado cambió a 'completada')
+    if target.estado == 'completada' and target.folio:
         try:
             from bully.data_sync import get_synchronizer
             sync = get_synchronizer()
@@ -436,10 +436,9 @@ def propagate_visit_update(mapper, connection, target):
                 # Propagar actualización vía HTTP
                 visita_data = {
                     'folio': target.folio,
-                    'activa': target.activa,
-                    'fecha_salida': target.fecha_salida.isoformat() if target.fecha_salida else None,
-                    'diagnostico': target.diagnostico,
-                    'tratamiento': target.tratamiento
+                    'estado': target.estado,
+                    'fecha_cierre': target.fecha_cierre.isoformat() if target.fecha_cierre else None,
+                    'diagnostico': target.diagnostico
                 }
 
                 sync.propagate_to_cluster('visita', 'UPDATE', visita_data)
