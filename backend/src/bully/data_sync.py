@@ -5,12 +5,14 @@ Este módulo maneja la sincronización de datos entre nodos del cluster:
 1. Sincronización inicial cuando un nodo se une al cluster
 2. Propagación de cambios a otros nodos
 3. Recuperación de datos de nodos existentes
+4. Re-sincronización cuando cambia el cluster
 """
 
 import logging
 import requests
+import threading
 from datetime import datetime
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Set
 
 # Logger específico para sincronización
 sync_logger = logging.getLogger('cluster.sync')
@@ -36,6 +38,8 @@ class DataSynchronizer:
         self.bully_manager = bully_manager
         self._synced = False
         self._sync_timestamp = None
+        self._known_nodes: Set[int] = set()  # Nodos conocidos para detectar cambios
+        self._sync_lock = threading.Lock()  # Lock para evitar syncs simultáneos
 
     def set_bully_manager(self, bully_manager):
         """Asigna el BullyManager después de la inicialización."""
@@ -48,7 +52,8 @@ class DataSynchronizer:
 
     def perform_initial_sync(self, timeout: float = 10.0) -> bool:
         """
-        Realiza sincronización inicial desde el líder o cualquier nodo disponible.
+        Realiza sincronización desde TODOS los nodos del cluster.
+        Esto garantiza tener datos completos de todas las salas.
 
         Args:
             timeout: Timeout para las requests HTTP
@@ -56,42 +61,48 @@ class DataSynchronizer:
         Returns:
             bool: True si la sincronización fue exitosa
         """
-        if not self.bully_manager:
-            sync_logger.warning("No bully_manager configured, skipping sync")
+        with self._sync_lock:
+            if not self.bully_manager:
+                sync_logger.warning("No bully_manager configured, skipping sync")
+                return False
+
+            # Obtener nodos del cluster (copia para evitar modificación durante iteración)
+            cluster_nodes = dict(self.bully_manager.cluster_nodes)
+            if not cluster_nodes:
+                sync_logger.info("No other nodes in cluster, nothing to sync")
+                self._synced = True
+                return True
+
+            from config import Config
+
+            sync_logger.info(f"[SYNC] Starting full cluster sync from {len(cluster_nodes)} nodes")
+
+            # Actualizar nodos conocidos
+            self._known_nodes = set(cluster_nodes.keys())
+
+            # Sincronizar desde TODOS los nodos para obtener datos completos
+            success_count = 0
+            for node_id, (host, tcp_port, udp_port) in cluster_nodes.items():
+                if node_id == Config.NODE_ID:
+                    continue
+
+                flask_port = 5000 + node_id % 1000
+                sync_logger.info(f"[SYNC] Syncing from Node {node_id} ({host}:{flask_port})")
+
+                if self._sync_from_node(host, flask_port, timeout):
+                    success_count += 1
+                    sync_logger.info(f"[SYNC] Successfully synced from Node {node_id}")
+                else:
+                    sync_logger.warning(f"[SYNC] Failed to sync from Node {node_id}")
+
+            if success_count > 0:
+                self._synced = True
+                self._sync_timestamp = datetime.now()
+                sync_logger.info(f"[SYNC] Completed: synced from {success_count}/{len(cluster_nodes)-1} nodes")
+                return True
+
+            sync_logger.warning("[SYNC] Could not sync from any node")
             return False
-
-        # Obtener nodos del cluster (copia para evitar modificación durante iteración)
-        cluster_nodes = dict(self.bully_manager.cluster_nodes)
-        if not cluster_nodes:
-            sync_logger.info("No other nodes in cluster, nothing to sync")
-            self._synced = True
-            return True
-
-        from config import Config
-
-        # Intentar sincronizar con el líder primero
-        leader_id = self.bully_manager.current_leader
-        if leader_id and leader_id != Config.NODE_ID and leader_id in cluster_nodes:
-            host, tcp_port, udp_port = cluster_nodes[leader_id]
-            flask_port = 5000 + leader_id % 1000
-
-            sync_logger.info(f"Attempting initial sync from leader (Node {leader_id})")
-            if self._sync_from_node(host, flask_port, timeout):
-                return True
-
-        # Si no hay líder o falló, intentar con otros nodos
-        for node_id, (host, tcp_port, udp_port) in cluster_nodes.items():
-            if node_id == Config.NODE_ID:
-                continue
-
-            flask_port = 5000 + node_id % 1000
-            sync_logger.info(f"Attempting initial sync from Node {node_id}")
-
-            if self._sync_from_node(host, flask_port, timeout):
-                return True
-
-        sync_logger.warning("Could not sync from any node")
-        return False
 
     def _sync_from_node(self, host: str, port: int, timeout: float) -> bool:
         """
@@ -386,6 +397,57 @@ class DataSynchronizer:
             'failed_nodes': failed_nodes,
             'total_nodes': total
         }
+
+    def check_and_resync_if_needed(self):
+        """
+        Verifica si hay cambios en el cluster y re-sincroniza si es necesario.
+        Se llama periódicamente para detectar nodos nuevos o reiniciados.
+        """
+        if not self.bully_manager:
+            return
+
+        from config import Config
+
+        # Obtener nodos actuales del cluster
+        current_nodes = set(dict(self.bully_manager.cluster_nodes).keys())
+
+        # Detectar cambios en el cluster
+        new_nodes = current_nodes - self._known_nodes
+        removed_nodes = self._known_nodes - current_nodes
+
+        if new_nodes or removed_nodes:
+            sync_logger.info(f"[SYNC-MONITOR] Cluster change detected!")
+            if new_nodes:
+                sync_logger.info(f"[SYNC-MONITOR] New nodes: {new_nodes}")
+            if removed_nodes:
+                sync_logger.info(f"[SYNC-MONITOR] Removed nodes: {removed_nodes}")
+
+            # Re-sincronizar para obtener datos actualizados
+            sync_logger.info(f"[SYNC-MONITOR] Triggering re-sync...")
+            self._synced = False  # Permitir re-sincronización
+
+            with self.app.app_context():
+                self.perform_initial_sync(timeout=10.0)
+
+    def start_periodic_sync(self, interval: int = 30):
+        """
+        Inicia un thread que monitorea cambios en el cluster periódicamente.
+
+        Args:
+            interval: Segundos entre cada verificación (default: 30)
+        """
+        def monitor_cluster():
+            import time
+            sync_logger.info(f"[SYNC-MONITOR] Started (checking every {interval}s)")
+            while True:
+                time.sleep(interval)
+                try:
+                    self.check_and_resync_if_needed()
+                except Exception as e:
+                    sync_logger.error(f"[SYNC-MONITOR] Error: {e}")
+
+        monitor_thread = threading.Thread(target=monitor_cluster, daemon=True)
+        monitor_thread.start()
 
 
 # Singleton global para acceso fácil

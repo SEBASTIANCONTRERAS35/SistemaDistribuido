@@ -157,9 +157,24 @@ def start_cluster_services(app, bully_manager):
     synchronizer = init_synchronizer(app, bully_manager)
     logger.info("Data synchronizer initialized")
 
-    # 3. Esperar un momento para que el discovery encuentre otros nodos
-    logger.info("Waiting for cluster discovery (5 seconds)...")
-    time.sleep(5)
+    # 3. Esperar a que el discovery complete (hasta que haya líder o timeout)
+    max_wait = 15
+    waited = 0
+    logger.info(f"Waiting for cluster discovery (max {max_wait}s)...")
+    while waited < max_wait:
+        # Si ya hay líder, el discovery completó
+        if bully_manager.current_leader is not None:
+            logger.info(f"Leader found: Node {bully_manager.current_leader} after {waited}s")
+            break
+        # Si ya encontró nodos, esperar un poco más para que se estabilice
+        if bully_manager.cluster_nodes and waited >= 5:
+            logger.info(f"Found {len(bully_manager.cluster_nodes)} nodes after {waited}s")
+            break
+        time.sleep(1)
+        waited += 1
+
+    if waited >= max_wait:
+        logger.info(f"Discovery timeout after {max_wait}s")
 
     # 4. Realizar sincronización inicial desde otros nodos
     if bully_manager.cluster_nodes:
@@ -172,6 +187,10 @@ def start_cluster_services(app, bully_manager):
                 logger.warning("Initial sync failed or no data to sync - continuing with local data")
     else:
         logger.info("No other nodes found - this is the first node in the cluster")
+
+    # 5. Iniciar monitoreo periódico del cluster
+    synchronizer.start_periodic_sync(interval=30)
+    logger.info("Periodic cluster sync monitor started (every 30s)")
 
     return synchronizer
 
