@@ -140,12 +140,51 @@ class DataSynchronizer:
     def _apply_sync_data(self, sync_data: Dict[str, List[Dict]]):
         """
         Aplica los datos sincronizados a la base de datos local.
+        IMPORTANTE: Elimina datos de otras salas antes de insertar para garantizar consistencia.
 
         Args:
             sync_data: Diccionario con listas de entidades a sincronizar
         """
         from models import db, Sala, Doctor, Cama, Paciente, TrabajadorSocial, VisitaEmergencia, Consecutivo
         from config import Config
+
+        my_sala_id = Config.NODE_ID
+        sync_logger.info(f"[SYNC] Iniciando sincronización. Mi sala: {my_sala_id}")
+
+        # =========================================================================
+        # PASO 0: LIMPIAR datos de OTRAS salas (no la propia)
+        # Esto garantiza que siempre tendremos los datos actuales
+        # =========================================================================
+
+        # Obtener IDs de salas que vienen en el sync (excluyendo la propia)
+        salas_remotas = [s['id_sala'] for s in sync_data.get('salas', []) if s['id_sala'] != my_sala_id]
+
+        if salas_remotas:
+            sync_logger.info(f"[SYNC] Limpiando datos de salas remotas: {salas_remotas}")
+
+            # Eliminar en orden inverso (por foreign keys)
+            # 1. Visitas de otras salas
+            deleted_visitas = VisitaEmergencia.query.filter(VisitaEmergencia.id_sala.in_(salas_remotas)).delete(synchronize_session='fetch')
+            sync_logger.info(f"[SYNC] Eliminadas {deleted_visitas} visitas de otras salas")
+
+            # 2. Consecutivos de otras salas
+            deleted_cons = Consecutivo.query.filter(Consecutivo.id_sala.in_(salas_remotas)).delete(synchronize_session='fetch')
+            sync_logger.info(f"[SYNC] Eliminados {deleted_cons} consecutivos de otras salas")
+
+            # 3. Trabajadores de otras salas
+            deleted_trab = TrabajadorSocial.query.filter(TrabajadorSocial.id_sala.in_(salas_remotas)).delete(synchronize_session='fetch')
+            sync_logger.info(f"[SYNC] Eliminados {deleted_trab} trabajadores de otras salas")
+
+            # 4. Camas de otras salas
+            deleted_camas = Cama.query.filter(Cama.id_sala.in_(salas_remotas)).delete(synchronize_session='fetch')
+            sync_logger.info(f"[SYNC] Eliminadas {deleted_camas} camas de otras salas")
+
+            # 5. Doctores de otras salas
+            deleted_docs = Doctor.query.filter(Doctor.id_sala.in_(salas_remotas)).delete(synchronize_session='fetch')
+            sync_logger.info(f"[SYNC] Eliminados {deleted_docs} doctores de otras salas")
+
+            db.session.flush()
+            sync_logger.info(f"[SYNC] Limpieza completada, insertando datos nuevos...")
 
         # Orden de inserción (respetando foreign keys)
         # 1. Salas (sin dependencias)
