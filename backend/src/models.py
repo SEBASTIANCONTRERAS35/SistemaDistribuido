@@ -408,6 +408,48 @@ def generate_folio(mapper, connection, target):
         target.folio = f"P{target.id_paciente}-D{target.id_doctor}-S{target.id_sala}-{consecutivo:04d}"
 
 
+# Flag global para evitar bucles de replicación
+_is_replicating = False
+
+
+@event.listens_for(VisitaEmergencia, 'after_update')
+def propagate_visit_update(mapper, connection, target):
+    """
+    Propaga actualizaciones de visitas (ej: cerrar visita) a otros nodos.
+
+    Solo se propaga si:
+    - No estamos en medio de una replicación (evita bucles)
+    - La visita tiene folio (ya fue sincronizada)
+    """
+    global _is_replicating
+    if _is_replicating:
+        return
+
+    # Solo propagar si la visita fue cerrada (activa cambió a False)
+    if not target.activa and target.folio:
+        try:
+            from bully.data_sync import get_synchronizer
+            sync = get_synchronizer()
+            if sync and sync.bully_manager:
+                _is_replicating = True
+
+                # Propagar actualización vía HTTP
+                visita_data = {
+                    'folio': target.folio,
+                    'activa': target.activa,
+                    'fecha_salida': target.fecha_salida.isoformat() if target.fecha_salida else None,
+                    'diagnostico': target.diagnostico,
+                    'tratamiento': target.tratamiento
+                }
+
+                sync.propagate_to_cluster('visita', 'UPDATE', visita_data)
+                _is_replicating = False
+        except Exception as e:
+            _is_replicating = False
+            # No fallar la transacción local por errores de propagación
+            pass
+
+
 # ============================================================================
 # CONSULTAS DISTRIBUIDAS - Agregación de datos del cluster completo
 # ============================================================================
