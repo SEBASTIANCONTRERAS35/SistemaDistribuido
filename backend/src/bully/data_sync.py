@@ -60,8 +60,8 @@ class DataSynchronizer:
             sync_logger.warning("No bully_manager configured, skipping sync")
             return False
 
-        # Obtener nodos del cluster
-        cluster_nodes = self.bully_manager.cluster_nodes
+        # Obtener nodos del cluster (copia para evitar modificación durante iteración)
+        cluster_nodes = dict(self.bully_manager.cluster_nodes)
         if not cluster_nodes:
             sync_logger.info("No other nodes in cluster, nothing to sync")
             self._synced = True
@@ -298,7 +298,8 @@ class DataSynchronizer:
 
         from config import Config
 
-        cluster_nodes = self.bully_manager.cluster_nodes
+        # Copia para evitar modificación durante iteración
+        cluster_nodes = dict(self.bully_manager.cluster_nodes)
         success_count = 0
         failed_nodes = []
 
