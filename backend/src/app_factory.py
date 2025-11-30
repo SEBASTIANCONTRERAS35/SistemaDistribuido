@@ -11,6 +11,10 @@ import os
 import threading
 from datetime import datetime
 
+# Logger global para funciones helper de replicación
+cluster_logger = logging.getLogger('cluster.api')
+
+
 def create_app():
     """
     Crea aplicación Flask para uso en consola (sin servidor web).
