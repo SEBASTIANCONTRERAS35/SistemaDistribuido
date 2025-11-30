@@ -68,6 +68,7 @@ def register_cluster_endpoints(app):
     @app.route('/api/cluster/doctors', methods=['GET'])
     def get_cluster_doctors():
         """Retorna doctores de la sala local."""
+        cluster_logger.info(f"[API] GET /api/cluster/doctors from {request.remote_addr}")
         try:
             disponible = request.args.get('disponible')
             activo = request.args.get('activo', 'true')
@@ -104,6 +105,7 @@ def register_cluster_endpoints(app):
     @app.route('/api/cluster/beds', methods=['GET'])
     def get_cluster_beds():
         """Retorna camas de la sala local."""
+        cluster_logger.info(f"[API] GET /api/cluster/beds from {request.remote_addr}")
         try:
             ocupada = request.args.get('ocupada')
 
@@ -135,6 +137,7 @@ def register_cluster_endpoints(app):
     @app.route('/api/cluster/stats', methods=['GET'])
     def get_cluster_stats():
         """Retorna estadísticas de este nodo."""
+        cluster_logger.info(f"[API] GET /api/cluster/stats from {request.remote_addr}")
         try:
             doctors_available = Doctor.query.filter_by(disponible=True, activo=True).count()
             doctors_total = Doctor.query.filter_by(activo=True).count()
@@ -163,8 +166,10 @@ def register_cluster_endpoints(app):
     @app.route('/api/cluster/replicate-visit', methods=['POST'])
     def replicate_visit():
         """Recibe y almacena una visita replicada desde el coordinador."""
+        cluster_logger.info(f"[API] POST /api/cluster/replicate-visit from {request.remote_addr}")
         try:
             data = request.json
+            cluster_logger.debug(f"[API] Replicate visit data: {data}")
             if not data:
                 return jsonify({'error': 'No data provided'}), 400
 
@@ -225,6 +230,7 @@ def register_cluster_endpoints(app):
     @app.route('/api/cluster/full-sync', methods=['GET'])
     def full_sync():
         """Retorna todos los datos para sincronización inicial de un nodo nuevo."""
+        cluster_logger.info(f"[API] GET /api/cluster/full-sync from {request.remote_addr}")
         try:
             # Salas
             salas = [{
@@ -299,6 +305,8 @@ def register_cluster_endpoints(app):
                 'ultimo_consecutivo': c.ultimo_consecutivo
             } for c in Consecutivo.query.all()]
 
+            cluster_logger.info(f"[API] Full-sync response: {len(salas)} salas, {len(doctores)} doctores, "
+                               f"{len(camas)} camas, {len(pacientes)} pacientes, {len(visitas)} visitas")
             return jsonify({
                 'node_id': Config.NODE_ID,
                 'timestamp': datetime.now().isoformat(),
@@ -314,7 +322,7 @@ def register_cluster_endpoints(app):
             })
 
         except Exception as e:
-            cluster_logger.error(f"Error in full-sync: {e}")
+            cluster_logger.error(f"[API] Error in full-sync: {e}", exc_info=True)
             return jsonify({'error': str(e)}), 500
 
     # =========================================================================
@@ -323,8 +331,10 @@ def register_cluster_endpoints(app):
     @app.route('/api/cluster/update-visit', methods=['PUT'])
     def update_visit():
         """Actualiza una visita existente (ej: cerrar visita)."""
+        cluster_logger.info(f"[API] PUT /api/cluster/update-visit from {request.remote_addr}")
         try:
             data = request.json
+            cluster_logger.debug(f"[API] Update visit data: {data}")
             if not data:
                 return jsonify({'error': 'No data provided'}), 400
 
@@ -372,8 +382,10 @@ def register_cluster_endpoints(app):
     @app.route('/api/cluster/replicate-entity', methods=['POST'])
     def replicate_entity():
         """Replica una entidad genérica (sala, doctor, cama, paciente, etc.)."""
+        cluster_logger.info(f"[API] POST /api/cluster/replicate-entity from {request.remote_addr}")
         try:
             data = request.json
+            cluster_logger.debug(f"[API] Replicate entity data: {data}")
             if not data:
                 return jsonify({'error': 'No data provided'}), 400
 
