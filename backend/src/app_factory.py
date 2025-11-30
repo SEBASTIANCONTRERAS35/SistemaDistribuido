@@ -199,6 +199,7 @@ def register_cluster_endpoints(app):
                     db.session.flush()
 
             # Crear la visita con el folio del coordinador (NO generar nuevo)
+            cluster_logger.info(f"[RECV] VISITA INSERT: folio={folio}, paciente={data.get('id_paciente')}, doctor={data.get('id_doctor')}, cama={data.get('id_cama')}, sala={data.get('id_sala')}")
             visita = VisitaEmergencia(
                 folio=folio,
                 id_paciente=data.get('id_paciente'),
@@ -216,7 +217,7 @@ def register_cluster_endpoints(app):
             db.session.add(visita)
             db.session.commit()
 
-            cluster_logger.info(f"Visit {folio} replicated successfully")
+            cluster_logger.info(f"[RECV] VISITA INSERTADA: folio={folio}")
             return jsonify({'status': 'replicated', 'folio': folio}), 201
 
         except Exception as e:
@@ -443,6 +444,7 @@ def register_cluster_endpoints(app):
 
 def _replicate_sala(operation, data):
     """Helper para replicar sala."""
+    cluster_logger.info(f"[RECV] SALA {operation}: id_sala={data.get('id_sala')}, numero={data.get('numero')}, activa={data.get('activa')}")
     if operation == 'INSERT':
         existing = Sala.query.filter_by(id_sala=data['id_sala']).first()
         if not existing:
@@ -450,18 +452,24 @@ def _replicate_sala(operation, data):
             numero_value = data.get('numero') or data['id_sala']
             sala = Sala(id_sala=data['id_sala'], numero=numero_value, activa=data.get('activa', True))
             db.session.add(sala)
+            cluster_logger.info(f"[RECV] SALA INSERTADA: id_sala={data['id_sala']}")
+        else:
+            cluster_logger.info(f"[RECV] SALA ya existe: id_sala={data['id_sala']}")
     elif operation == 'UPDATE':
         sala = Sala.query.filter_by(id_sala=data['id_sala']).first()
         if sala:
             sala.activa = data.get('activa', sala.activa)
+            cluster_logger.info(f"[RECV] SALA ACTUALIZADA: id_sala={data['id_sala']}")
     elif operation == 'DELETE':
         sala = Sala.query.filter_by(id_sala=data['id_sala']).first()
         if sala:
             db.session.delete(sala)
+            cluster_logger.info(f"[RECV] SALA ELIMINADA: id_sala={data['id_sala']}")
 
 
 def _replicate_doctor(operation, data):
     """Helper para replicar doctor."""
+    cluster_logger.info(f"[RECV] DOCTOR {operation}: id={data.get('id_doctor')}, nombre={data.get('nombre')}, sala={data.get('id_sala')}")
     if operation == 'INSERT':
         existing = Doctor.query.filter_by(id_doctor=data['id_doctor']).first()
         if not existing:
@@ -474,19 +482,25 @@ def _replicate_doctor(operation, data):
                 id_sala=data['id_sala']
             )
             db.session.add(doctor)
+            cluster_logger.info(f"[RECV] DOCTOR INSERTADO: id={data['id_doctor']}, {data['nombre']}")
+        else:
+            cluster_logger.info(f"[RECV] DOCTOR ya existe: id={data['id_doctor']}")
     elif operation == 'UPDATE':
         doctor = Doctor.query.filter_by(id_doctor=data['id_doctor']).first()
         if doctor:
             doctor.disponible = data.get('disponible', doctor.disponible)
             doctor.activo = data.get('activo', doctor.activo)
+            cluster_logger.info(f"[RECV] DOCTOR ACTUALIZADO: id={data['id_doctor']}")
     elif operation == 'DELETE':
         doctor = Doctor.query.filter_by(id_doctor=data['id_doctor']).first()
         if doctor:
             db.session.delete(doctor)
+            cluster_logger.info(f"[RECV] DOCTOR ELIMINADO: id={data['id_doctor']}")
 
 
 def _replicate_cama(operation, data):
     """Helper para replicar cama."""
+    cluster_logger.info(f"[RECV] CAMA {operation}: id={data.get('id_cama')}, numero={data.get('numero')}, sala={data.get('id_sala')}")
     if operation == 'INSERT':
         existing = Cama.query.filter_by(id_cama=data['id_cama']).first()
         if not existing:
@@ -498,19 +512,25 @@ def _replicate_cama(operation, data):
                 id_paciente=data.get('id_paciente')
             )
             db.session.add(cama)
+            cluster_logger.info(f"[RECV] CAMA INSERTADA: id={data['id_cama']}, numero={data['numero']}")
+        else:
+            cluster_logger.info(f"[RECV] CAMA ya existe: id={data['id_cama']}")
     elif operation == 'UPDATE':
         cama = Cama.query.filter_by(id_cama=data['id_cama']).first()
         if cama:
             cama.ocupada = data.get('ocupada', cama.ocupada)
             cama.id_paciente = data.get('id_paciente', cama.id_paciente)
+            cluster_logger.info(f"[RECV] CAMA ACTUALIZADA: id={data['id_cama']}, ocupada={data.get('ocupada')}")
     elif operation == 'DELETE':
         cama = Cama.query.filter_by(id_cama=data['id_cama']).first()
         if cama:
             db.session.delete(cama)
+            cluster_logger.info(f"[RECV] CAMA ELIMINADA: id={data['id_cama']}")
 
 
 def _replicate_paciente(operation, data):
     """Helper para replicar paciente."""
+    cluster_logger.info(f"[RECV] PACIENTE {operation}: id={data.get('id_paciente')}, nombre={data.get('nombre')}")
     if operation == 'INSERT':
         existing = Paciente.query.filter_by(id_paciente=data['id_paciente']).first()
         if not existing:
@@ -522,19 +542,25 @@ def _replicate_paciente(operation, data):
                 curp=data.get('curp')
             )
             db.session.add(paciente)
+            cluster_logger.info(f"[RECV] PACIENTE INSERTADO: id={data['id_paciente']}, {data['nombre']}")
+        else:
+            cluster_logger.info(f"[RECV] PACIENTE ya existe: id={data['id_paciente']}")
     elif operation == 'UPDATE':
         paciente = Paciente.query.filter_by(id_paciente=data['id_paciente']).first()
         if paciente:
             paciente.nombre = data.get('nombre', paciente.nombre)
             paciente.edad = data.get('edad', paciente.edad)
+            cluster_logger.info(f"[RECV] PACIENTE ACTUALIZADO: id={data['id_paciente']}")
     elif operation == 'DELETE':
         paciente = Paciente.query.filter_by(id_paciente=data['id_paciente']).first()
         if paciente:
             db.session.delete(paciente)
+            cluster_logger.info(f"[RECV] PACIENTE ELIMINADO: id={data['id_paciente']}")
 
 
 def _replicate_trabajador(operation, data):
     """Helper para replicar trabajador social."""
+    cluster_logger.info(f"[RECV] TRABAJADOR {operation}: id={data.get('id_trabajador')}, nombre={data.get('nombre')}, sala={data.get('id_sala')}")
     if operation == 'INSERT':
         existing = TrabajadorSocial.query.filter_by(id_trabajador=data['id_trabajador']).first()
         if not existing:
@@ -545,14 +571,19 @@ def _replicate_trabajador(operation, data):
                 id_sala=data['id_sala']
             )
             db.session.add(trabajador)
+            cluster_logger.info(f"[RECV] TRABAJADOR INSERTADO: id={data['id_trabajador']}, {data['nombre']}")
+        else:
+            cluster_logger.info(f"[RECV] TRABAJADOR ya existe: id={data['id_trabajador']}")
     elif operation == 'UPDATE':
         trabajador = TrabajadorSocial.query.filter_by(id_trabajador=data['id_trabajador']).first()
         if trabajador:
             trabajador.activo = data.get('activo', trabajador.activo)
+            cluster_logger.info(f"[RECV] TRABAJADOR ACTUALIZADO: id={data['id_trabajador']}")
     elif operation == 'DELETE':
         trabajador = TrabajadorSocial.query.filter_by(id_trabajador=data['id_trabajador']).first()
         if trabajador:
             db.session.delete(trabajador)
+            cluster_logger.info(f"[RECV] TRABAJADOR ELIMINADO: id={data['id_trabajador']}")
 
 
 def start_cluster_api_server(app, host='0.0.0.0', port=None):
