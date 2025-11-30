@@ -49,11 +49,11 @@ class Config:
     MULTICAST_GROUP = os.getenv('MULTICAST_GROUP', '224.0.0.100')
     MULTICAST_PORT = int(os.getenv('MULTICAST_PORT', '5005'))
 
-    # Intervalo de anuncio de presencia (segundos)
-    DISCOVERY_ANNOUNCE_INTERVAL = int(os.getenv('DISCOVERY_ANNOUNCE_INTERVAL', '5'))
+    # Intervalo de anuncio de presencia (segundos) - reducido para detección rápida
+    DISCOVERY_ANNOUNCE_INTERVAL = int(os.getenv('DISCOVERY_ANNOUNCE_INTERVAL', '2'))
 
-    # Timeout para considerar nodo muerto (segundos)
-    DISCOVERY_NODE_TIMEOUT = int(os.getenv('DISCOVERY_NODE_TIMEOUT', '15'))
+    # Timeout para considerar nodo muerto (segundos) - reducido para respuesta rápida
+    DISCOVERY_NODE_TIMEOUT = int(os.getenv('DISCOVERY_NODE_TIMEOUT', '6'))
 
     # Modo de operación: 'dynamic' (auto-descubrimiento) o 'static' (lista fija)
     CLUSTER_MODE = os.getenv('CLUSTER_MODE', 'dynamic')
@@ -77,10 +77,10 @@ class Config:
     USE_BROADCAST_FALLBACK = os.getenv('USE_BROADCAST_FALLBACK', 'true').lower() == 'true'
 
     # Timeout de elección de líder (segundos sin heartbeat para iniciar elección)
-    ELECTION_TIMEOUT = int(os.getenv('ELECTION_TIMEOUT', '10'))
+    ELECTION_TIMEOUT = int(os.getenv('ELECTION_TIMEOUT', '5'))
 
-    # Intervalo de heartbeat del líder (segundos)
-    BULLY_HEARTBEAT_INTERVAL = int(os.getenv('HEARTBEAT_INTERVAL', '3'))
+    # Intervalo de heartbeat del líder (segundos) - reducido para detección rápida
+    BULLY_HEARTBEAT_INTERVAL = int(os.getenv('HEARTBEAT_INTERVAL', '1'))
 
     # TCP backlog (conexiones pendientes en cola)
     TCP_BACKLOG = int(os.getenv('TCP_BACKLOG', '20'))
@@ -102,9 +102,9 @@ class Config:
     SOCKETIO_ASYNC_MODE = 'threading'
     SOCKETIO_CORS_ALLOWED_ORIGINS = '*'
 
-    # Configuración de timeouts
-    HEARTBEAT_INTERVAL = 5  # segundos
-    NODE_TIMEOUT = 15  # segundos para considerar nodo caído
+    # Configuración de timeouts (reducidos para respuesta rápida)
+    HEARTBEAT_INTERVAL = 2  # segundos
+    NODE_TIMEOUT = 6  # segundos para considerar nodo caído
 
     # Configuración de logs
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')

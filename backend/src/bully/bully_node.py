@@ -171,9 +171,9 @@ class BullyNode:
 
         # Iniciar primera elección en thread separado (no bloqueante)
         def delayed_election():
-            # FASE DE DESCUBRIMIENTO: Esperar más tiempo para recibir heartbeats
-            logger.info(f"[Node-{self.node_id}] [DISCOVERY] Starting discovery phase (10s)...")
-            discovery_time = 10  # segundos para descubrir líder existente
+            # FASE DE DESCUBRIMIENTO: Esperar para recibir heartbeats
+            logger.info(f"[Node-{self.node_id}] [DISCOVERY] Starting discovery phase (5s)...")
+            discovery_time = 5  # segundos para descubrir líder existente (reducido de 10)
 
             # Esperar y verificar si se descubre un líder
             start_time = time.time()
@@ -264,7 +264,7 @@ class BullyNode:
             )
 
             logger.debug(f"[Node-{self.node_id}] [ELECTION] Sending ELECTION to node {target_id}")
-            response = self.comm.send_tcp(ip, tcp_port, msg, timeout=5.0)  # Aumentado de 2.0s a 5.0s
+            response = self.comm.send_tcp(ip, tcp_port, msg, timeout=2.0)  # Reducido de 5.0s para respuesta rápida
 
             if response and response.type == 'OK':
                 ok_count += 1
@@ -277,7 +277,7 @@ class BullyNode:
                 self.state = NodeState.FOLLOWER
 
             # Esperar COORDINATOR con timeout
-            wait_time = 10  # segundos
+            wait_time = 5  # segundos (reducido de 10)
             start_wait = time.time()
 
             while time.time() - start_wait < wait_time:

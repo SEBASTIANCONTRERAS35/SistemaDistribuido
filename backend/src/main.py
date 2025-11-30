@@ -158,7 +158,7 @@ def start_cluster_services(app, bully_manager):
     logger.info("Data synchronizer initialized")
 
     # 3. Esperar a que el discovery complete (hasta que haya líder o timeout)
-    max_wait = 15
+    max_wait = 8  # Reducido de 15s para inicio más rápido
     waited = 0
     logger.info(f"Waiting for cluster discovery (max {max_wait}s)...")
     while waited < max_wait:
@@ -167,11 +167,11 @@ def start_cluster_services(app, bully_manager):
             logger.info(f"Leader found: Node {bully_manager.current_leader} after {waited}s")
             break
         # Si ya encontró nodos, esperar un poco más para que se estabilice
-        if bully_manager.cluster_nodes and waited >= 5:
+        if bully_manager.cluster_nodes and waited >= 3:  # Reducido de 5s
             logger.info(f"Found {len(bully_manager.cluster_nodes)} nodes after {waited}s")
             break
-        time.sleep(1)
-        waited += 1
+        time.sleep(0.5)  # Check más frecuente
+        waited += 0.5
 
     if waited >= max_wait:
         logger.info(f"Discovery timeout after {max_wait}s")

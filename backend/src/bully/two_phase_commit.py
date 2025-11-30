@@ -92,8 +92,8 @@ class TwoPhaseCommitCoordinator:
         self.bully_manager = bully_manager
         self.flask_app = flask_app
         self.pending_txns: Dict[str, Transaction] = {}
-        self.prepare_timeout = 10.0  # segundos
-        self.commit_timeout = 5.0
+        self.prepare_timeout = 3.0  # segundos (reducido de 10.0 para respuesta rápida)
+        self.commit_timeout = 2.0   # segundos (reducido de 5.0)
 
     def begin_transaction(self, operation: str, data: Dict) -> str:
         """
