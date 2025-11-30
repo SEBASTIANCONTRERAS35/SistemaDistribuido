@@ -154,22 +154,25 @@ class DataSynchronizer:
         # 4. Visitas (dependen de Paciente, Doctor, Cama, Sala)
         # 5. Consecutivos
 
-        # 1. Sincronizar Salas
+        # 1. Sincronizar Salas (TODAS, incluida la propia para consistencia)
         salas = sync_data.get('salas', [])
         for sala_data in salas:
-            # No sincronizar nuestra propia sala
-            if sala_data['id_sala'] == Config.NODE_ID:
-                continue
-
             existing = Sala.query.filter_by(id_sala=sala_data['id_sala']).first()
+            # Fallback: si numero es None, usar id_sala
+            numero_value = sala_data.get('numero') or sala_data['id_sala']
+
             if not existing:
                 sala = Sala(
                     id_sala=sala_data['id_sala'],
-                    numero=sala_data.get('numero'),
+                    numero=numero_value,
                     activa=sala_data.get('activa', True)
                 )
                 db.session.add(sala)
                 sync_logger.debug(f"Added sala {sala_data['id_sala']}")
+            elif existing.numero is None:
+                # Actualizar numero si está NULL
+                existing.numero = numero_value
+                sync_logger.debug(f"Updated sala {sala_data['id_sala']} numero to {numero_value}")
 
         db.session.flush()
 

@@ -232,10 +232,10 @@ def register_cluster_endpoints(app):
         """Retorna todos los datos para sincronización inicial de un nodo nuevo."""
         cluster_logger.info(f"[API] GET /api/cluster/full-sync from {request.remote_addr}")
         try:
-            # Salas
+            # Salas (fallback: si numero es None, usar id_sala)
             salas = [{
                 'id_sala': s.id_sala,
-                'numero': s.numero,
+                'numero': s.numero if s.numero is not None else s.id_sala,
                 'activa': s.activa
             } for s in Sala.query.all()]
 
@@ -418,13 +418,37 @@ def register_cluster_endpoints(app):
             cluster_logger.error(f"Error replicating entity: {e}")
             return jsonify({'error': str(e)}), 500
 
+    # =========================================================================
+    # POST /api/cluster/force-resync - Forzar re-sincronización
+    # =========================================================================
+    @app.route('/api/cluster/force-resync', methods=['POST'])
+    def force_resync():
+        """Fuerza re-sincronización completa desde otro nodo del cluster."""
+        cluster_logger.info(f"[API] POST /api/cluster/force-resync from {request.remote_addr}")
+        try:
+            from bully.data_sync import get_synchronizer
+            sync = get_synchronizer()
+            if sync:
+                sync._synced = False  # Resetear estado
+                result = sync.perform_initial_sync(timeout=15.0)
+                return jsonify({
+                    'success': result,
+                    'message': 'Re-sync completado' if result else 'Re-sync falló'
+                })
+            return jsonify({'success': False, 'error': 'Sincronizador no disponible'}), 500
+        except Exception as e:
+            cluster_logger.error(f"Force resync error: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+
 
 def _replicate_sala(operation, data):
     """Helper para replicar sala."""
     if operation == 'INSERT':
         existing = Sala.query.filter_by(id_sala=data['id_sala']).first()
         if not existing:
-            sala = Sala(id_sala=data['id_sala'], numero=data.get('numero'), activa=data.get('activa', True))
+            # Fallback: si numero es None, usar id_sala
+            numero_value = data.get('numero') or data['id_sala']
+            sala = Sala(id_sala=data['id_sala'], numero=numero_value, activa=data.get('activa', True))
             db.session.add(sala)
     elif operation == 'UPDATE':
         sala = Sala.query.filter_by(id_sala=data['id_sala']).first()
