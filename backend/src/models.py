@@ -450,6 +450,108 @@ def propagate_visit_update(mapper, connection, target):
 
 
 # ============================================================================
+# PROPAGACIÓN DE RECURSOS (Sala, Doctor, Cama, TrabajadorSocial)
+# ============================================================================
+
+@event.listens_for(Sala, 'after_insert')
+def propagate_sala_insert(mapper, connection, target):
+    """Propaga nueva sala a otros nodos del cluster."""
+    global _is_replicating
+    if _is_replicating:
+        return
+
+    try:
+        from bully.data_sync import get_synchronizer
+        sync = get_synchronizer()
+        if sync and sync.bully_manager:
+            _is_replicating = True
+            sala_data = {
+                'id_sala': target.id_sala,
+                'numero': target.numero,
+                'activa': target.activa
+            }
+            sync.propagate_to_cluster('sala', 'INSERT', sala_data)
+            _is_replicating = False
+    except Exception as e:
+        _is_replicating = False
+
+
+@event.listens_for(Doctor, 'after_insert')
+def propagate_doctor_insert(mapper, connection, target):
+    """Propaga nuevo doctor a otros nodos del cluster."""
+    global _is_replicating
+    if _is_replicating:
+        return
+
+    try:
+        from bully.data_sync import get_synchronizer
+        sync = get_synchronizer()
+        if sync and sync.bully_manager:
+            _is_replicating = True
+            doctor_data = {
+                'id_doctor': target.id_doctor,
+                'nombre': target.nombre,
+                'especialidad': target.especialidad,
+                'disponible': target.disponible,
+                'activo': target.activo,
+                'id_sala': target.id_sala
+            }
+            sync.propagate_to_cluster('doctor', 'INSERT', doctor_data)
+            _is_replicating = False
+    except Exception as e:
+        _is_replicating = False
+
+
+@event.listens_for(Cama, 'after_insert')
+def propagate_cama_insert(mapper, connection, target):
+    """Propaga nueva cama a otros nodos del cluster."""
+    global _is_replicating
+    if _is_replicating:
+        return
+
+    try:
+        from bully.data_sync import get_synchronizer
+        sync = get_synchronizer()
+        if sync and sync.bully_manager:
+            _is_replicating = True
+            cama_data = {
+                'id_cama': target.id_cama,
+                'numero': target.numero,
+                'ocupada': target.ocupada,
+                'id_sala': target.id_sala,
+                'id_paciente': target.id_paciente
+            }
+            sync.propagate_to_cluster('cama', 'INSERT', cama_data)
+            _is_replicating = False
+    except Exception as e:
+        _is_replicating = False
+
+
+@event.listens_for(TrabajadorSocial, 'after_insert')
+def propagate_trabajador_insert(mapper, connection, target):
+    """Propaga nuevo trabajador social a otros nodos del cluster."""
+    global _is_replicating
+    if _is_replicating:
+        return
+
+    try:
+        from bully.data_sync import get_synchronizer
+        sync = get_synchronizer()
+        if sync and sync.bully_manager:
+            _is_replicating = True
+            trabajador_data = {
+                'id_trabajador': target.id_trabajador,
+                'nombre': target.nombre,
+                'activo': target.activo,
+                'id_sala': target.id_sala
+            }
+            sync.propagate_to_cluster('trabajador', 'INSERT', trabajador_data)
+            _is_replicating = False
+    except Exception as e:
+        _is_replicating = False
+
+
+# ============================================================================
 # CONSULTAS DISTRIBUIDAS - Agregación de datos del cluster completo
 # ============================================================================
 
