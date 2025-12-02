@@ -47,12 +47,19 @@ def verificar_recurso_local(flask_app, recurso_tipo: str, recurso_id: int) -> bo
 
     Args:
         flask_app: Aplicacion Flask para contexto de BD
-        recurso_tipo: 'DOCTOR' o 'CAMA'
+        recurso_tipo: 'DOCTOR', 'CAMA', o 'SALA_*' (recursos virtuales)
         recurso_id: ID del recurso
 
     Returns:
         True si el recurso esta disponible
     """
+    # Los tipos SALA_* son recursos virtuales para serializar operaciones
+    # (SALA_DOCTOR, SALA_TRABAJADOR, etc.)
+    # La disponibilidad real se verifica en el 2PC, aquí solo permitimos el lock
+    if recurso_tipo.startswith("SALA_"):
+        logger.info(f"[LOCK] Recurso virtual {recurso_tipo}_{recurso_id} - permitiendo lock")
+        return True
+
     with flask_app.app_context():
         from models import Doctor, Cama
 
@@ -64,6 +71,7 @@ def verificar_recurso_local(flask_app, recurso_tipo: str, recurso_id: int) -> bo
             cama = Cama.query.get(recurso_id)
             return cama is not None and not cama.ocupada
 
+    logger.warning(f"[LOCK] Tipo de recurso desconocido: {recurso_tipo}")
     return False
 
 
@@ -127,34 +135,41 @@ def solicitar_bloqueo_distribuido(
     Args:
         bully_node: Instancia de BullyNode
         flask_app: Aplicacion Flask
-        recurso_tipo: 'DOCTOR' o 'CAMA'
+        recurso_tipo: 'DOCTOR', 'CAMA', o 'SALA_*'
         recurso_id: ID del recurso
         timeout: Timeout en segundos para cada nodo
 
     Returns:
         True si se obtuvo el bloqueo, False si fue rechazado
     """
-    logger.info(f"[LOCK] Solicitando bloqueo: {recurso_tipo}_{recurso_id}")
+    logger.warning(f"[LOCK] ========== INICIO SOLICITUD BLOQUEO ==========")
+    logger.warning(f"[LOCK] Node {bully_node.node_id} solicitando: {recurso_tipo}_{recurso_id}")
 
     # Limpiar bloqueos expirados antes de solicitar nuevos
     limpiar_bloqueos_expirados()
 
     # 1. Verificacion local inmediata
+    logger.warning(f"[LOCK] Paso 1: Verificando disponibilidad local de {recurso_tipo}_{recurso_id}")
     if not verificar_recurso_local(flask_app, recurso_tipo, recurso_id):
-        logger.warning(f"[LOCK] {recurso_tipo}_{recurso_id} no disponible localmente")
+        logger.warning(f"[LOCK] FALLO: {recurso_tipo}_{recurso_id} no disponible localmente")
         return False
+    logger.warning(f"[LOCK] OK: {recurso_tipo}_{recurso_id} disponible localmente")
 
+    logger.warning(f"[LOCK] Paso 2: Verificando si ya está bloqueado localmente")
     if esta_bloqueado_localmente(recurso_tipo, recurso_id):
-        logger.warning(f"[LOCK] {recurso_tipo}_{recurso_id} ya bloqueado localmente")
+        logger.warning(f"[LOCK] FALLO: {recurso_tipo}_{recurso_id} ya bloqueado localmente")
         return False
+    logger.warning(f"[LOCK] OK: {recurso_tipo}_{recurso_id} no está bloqueado localmente")
 
     # 2. Si no hay otros nodos, solo bloqueo local
     otros_nodos = {k: v for k, v in bully_node.cluster_nodes.items()
                    if k != bully_node.node_id}
 
+    logger.warning(f"[LOCK] Paso 3: Otros nodos en cluster: {list(otros_nodos.keys())}")
+
     if not otros_nodos:
         bloquear_localmente(recurso_tipo, recurso_id)
-        logger.info(f"[LOCK] Bloqueo concedido (solo local, sin otros nodos)")
+        logger.warning(f"[LOCK] ÉXITO: Bloqueo concedido (solo local, sin otros nodos)")
         return True
 
     # 3. Solicitar bloqueo a TODOS los nodos
@@ -171,32 +186,41 @@ def solicitar_bloqueo_distribuido(
         }
     )
 
+    logger.warning(f"[LOCK] Paso 4: Solicitando bloqueo a {len(otros_nodos)} nodos...")
+
     for node_id, (ip, tcp_port, udp_port) in otros_nodos.items():
         try:
+            logger.warning(f"[LOCK] Enviando LOCK_REQUEST a nodo {node_id} ({ip}:{tcp_port})")
             response = bully_node.comm.send_tcp(ip, tcp_port, msg, timeout=timeout)
 
             if response and response.data and response.data.get('approved'):
                 nodos_aprobados.append(node_id)
-                logger.info(f"[LOCK] Nodo {node_id} aprobo bloqueo de {recurso_tipo}_{recurso_id}")
+                logger.warning(f"[LOCK] ✓ Nodo {node_id} APROBÓ bloqueo de {recurso_tipo}_{recurso_id}")
             else:
                 reason = response.data.get('reason', 'unknown') if response and response.data else 'no_response'
-                logger.warning(f"[LOCK] Nodo {node_id} rechazo bloqueo: {reason}")
+                logger.warning(f"[LOCK] ✗ Nodo {node_id} RECHAZÓ bloqueo: {reason}")
                 # Si CUALQUIERA rechaza, abortar y liberar los ya aprobados
+                logger.warning(f"[LOCK] Haciendo rollback de {len(nodos_aprobados)} bloqueos aprobados...")
                 _rollback_bloqueos(bully_node, recurso_tipo, recurso_id, nodos_aprobados)
+                logger.warning(f"[LOCK] ========== FIN SOLICITUD (RECHAZADO) ==========")
                 return False
 
         except Exception as e:
-            logger.error(f"[LOCK] Nodo {node_id} no respondio: {e}")
+            logger.error(f"[LOCK] ✗ Nodo {node_id} no respondió: {e}")
             # Si CUALQUIERA no responde, abortar
+            logger.warning(f"[LOCK] Haciendo rollback de {len(nodos_aprobados)} bloqueos aprobados...")
             _rollback_bloqueos(bully_node, recurso_tipo, recurso_id, nodos_aprobados)
+            logger.warning(f"[LOCK] ========== FIN SOLICITUD (TIMEOUT) ==========")
             return False
 
     # 4. Solo si TODOS aprobaron, bloquear localmente
     if len(nodos_aprobados) == len(otros_nodos):
         bloquear_localmente(recurso_tipo, recurso_id)
-        logger.info(f"[LOCK] Bloqueo CONCEDIDO: {recurso_tipo}_{recurso_id} (aprobado por {len(nodos_aprobados)} nodos)")
+        logger.warning(f"[LOCK] ========== ÉXITO: BLOQUEO CONCEDIDO ==========")
+        logger.warning(f"[LOCK] {recurso_tipo}_{recurso_id} bloqueado (aprobado por {len(nodos_aprobados)} nodos)")
         return True
 
+    logger.warning(f"[LOCK] ========== FIN SOLICITUD (ERROR INESPERADO) ==========")
     return False
 
 
@@ -298,11 +322,12 @@ def handle_lock_request(message, flask_app, node_id) -> 'Message':
     recurso_tipo = data.get('recurso_tipo')
     recurso_id = data.get('recurso_id')
 
-    logger.info(f"[LOCK] Recibida solicitud de bloqueo: {recurso_tipo}_{recurso_id} de nodo {message.sender_id}")
+    logger.warning(f"[LOCK-HANDLER] ===== RECIBIDA SOLICITUD DE BLOQUEO =====")
+    logger.warning(f"[LOCK-HANDLER] Node {node_id} recibió solicitud de {recurso_tipo}_{recurso_id} desde nodo {message.sender_id}")
 
     # Verificar si ya esta bloqueado localmente
     if esta_bloqueado_localmente(recurso_tipo, recurso_id):
-        logger.info(f"[LOCK] Rechazando {recurso_tipo}_{recurso_id} (ya bloqueado)")
+        logger.warning(f"[LOCK-HANDLER] ✗ RECHAZANDO {recurso_tipo}_{recurso_id} (ya bloqueado localmente)")
         return Message(
             type=LOCK_RESPONSE,
             sender_id=node_id,
@@ -311,8 +336,9 @@ def handle_lock_request(message, flask_app, node_id) -> 'Message':
         )
 
     # Verificar disponibilidad en BD
+    logger.warning(f"[LOCK-HANDLER] Verificando disponibilidad de {recurso_tipo}_{recurso_id}...")
     if not verificar_recurso_local(flask_app, recurso_tipo, recurso_id):
-        logger.info(f"[LOCK] Rechazando {recurso_tipo}_{recurso_id} (no disponible en BD)")
+        logger.warning(f"[LOCK-HANDLER] ✗ RECHAZANDO {recurso_tipo}_{recurso_id} (no disponible en BD)")
         return Message(
             type=LOCK_RESPONSE,
             sender_id=node_id,
@@ -322,7 +348,7 @@ def handle_lock_request(message, flask_app, node_id) -> 'Message':
 
     # Aprobar y bloquear localmente
     bloquear_localmente(recurso_tipo, recurso_id)
-    logger.info(f"[LOCK] Aprobando bloqueo {recurso_tipo}_{recurso_id} para nodo {message.sender_id}")
+    logger.warning(f"[LOCK-HANDLER] ✓ APROBANDO bloqueo {recurso_tipo}_{recurso_id} para nodo {message.sender_id}")
 
     return Message(
         type=LOCK_RESPONSE,
