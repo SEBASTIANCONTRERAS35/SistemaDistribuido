@@ -358,27 +358,46 @@ class SimpleCreateVisitScreen(Screen):
                 if not camas:
                     return {'success': False, 'error': 'No hay camas disponibles'}
 
-                # Seleccionar primer doctor y cama disponibles
-                doctor = doctores[0]
-                cama = camas[0]
+                # ====== PASO 3: Buscar combinación doctor+cama disponible ======
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paso 3: Buscando recursos disponibles...")
+                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Opciones: {len(doctores)} doctores x {len(camas)} camas = {len(doctores) * len(camas)} combinaciones")
 
-                # ====== PASO 3: Adquirir bloqueos distribuidos (orden deterministico) ======
-                logger.warning(f"[Node-{node_id}] [2PC-VISIT] Paso 3: Adquiriendo bloqueos distribuidos...")
-                recursos_a_bloquear = [
-                    ('DOCTOR', doctor.id_doctor),
-                    ('CAMA', cama.id_cama)
-                ]
+                doctor = None
+                cama = None
+                locked_resources = []
 
-                success, locked_resources = solicitar_bloqueo_con_orden(
-                    self.bully_manager,
-                    self.flask_app,
-                    recursos_a_bloquear,
-                    timeout=10.0
-                )
+                # Iterar sobre todas las combinaciones posibles
+                for cama_candidata in camas:
+                    for doctor_candidato in doctores:
+                        recursos_a_bloquear = [
+                            ('DOCTOR', doctor_candidato.id_doctor),
+                            ('CAMA', cama_candidata.id_cama)
+                        ]
 
-                if not success:
-                    logger.warning(f"[Node-{node_id}] [2PC-VISIT] No se pudieron adquirir bloqueos")
-                    return {'success': False, 'error': 'No se pudieron reservar recursos (ocupados o timeout)'}
+                        logger.info(f"[Node-{node_id}] [2PC-VISIT] Intentando: Doctor {doctor_candidato.id_doctor}, Cama {cama_candidata.numero}")
+
+                        success, locked_resources = solicitar_bloqueo_con_orden(
+                            self.bully_manager,
+                            self.flask_app,
+                            recursos_a_bloquear,
+                            timeout=5.0  # Timeout corto para probar rápido
+                        )
+
+                        if success:
+                            doctor = doctor_candidato
+                            cama = cama_candidata
+                            logger.warning(f"[Node-{node_id}] [2PC-VISIT] ✓ Recursos asegurados: Doctor {doctor.id_doctor}, Cama {cama.numero}")
+                            break
+                        else:
+                            logger.info(f"[Node-{node_id}] [2PC-VISIT] ✗ Combinación ocupada, probando siguiente...")
+
+                    if doctor and cama:
+                        break  # Salir del loop externo también
+
+                # Verificar si encontramos recursos
+                if not doctor or not cama:
+                    logger.warning(f"[Node-{node_id}] [2PC-VISIT] TODAS las combinaciones ocupadas ({len(doctores) * len(camas)} intentos)")
+                    return {'success': False, 'error': f'Todos los recursos ocupados (probé {len(doctores)} doctores x {len(camas)} camas)'}
 
                 logger.warning(f"[Node-{node_id}] [2PC-VISIT] Bloqueos adquiridos: {locked_resources}")
 

@@ -1,15 +1,15 @@
 ======================================================================
-VISITA DE EMERGENCIA - 2025-11-29 20:37:17
+VISITA DE EMERGENCIA - 2025-11-29 20:49:54
 ======================================================================
-Folio: P20-D1-S1-0001
-ID Visita: 3
+Folio: P21-D1-S1-0002
+ID Visita: 4
 Estado: ACTIVA
 
 --- PACIENTE ---
-ID: 20
-Nombre: emilio
+ID: 21
+Nombre: bruno
 Edad: 34 años
-Sexo: M
+Sexo: F
 CURP: N/A
 
 --- ASIGNACIÓN ---
@@ -18,12 +18,12 @@ Doctor: Dr. Ricardo Mendiola S1 (Medicina General)
 Cama: #101
 
 --- CLÍNICO ---
-Síntomas: dsfdsfdsfdsfdsfdsfsdf
+Síntomas: dfdsfdsfdsfdsfdsfdsfdsfds
 Diagnóstico: (pendiente)
 
 --- METADATA ---
-Nodo creador: 1
+Nodo creador: 3
 Usuario: social1
-Timestamp: 2025-11-30 02:37:09.009771
+Timestamp: 2025-11-30 02:49:54.477223
 
 
