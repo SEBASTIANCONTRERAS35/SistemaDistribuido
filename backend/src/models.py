@@ -410,6 +410,13 @@ def generate_folio(mapper, connection, target):
 
 # Flag global para evitar bucles de replicación
 _is_replicating = False
+_is_2pc_context = False  # Flag para evitar propagación durante 2PC
+
+
+def set_2pc_context(value: bool):
+    """Activa/desactiva contexto 2PC para evitar doble propagación."""
+    global _is_2pc_context
+    _is_2pc_context = value
 
 
 @event.listens_for(VisitaEmergencia, 'after_update')
@@ -456,9 +463,9 @@ def propagate_visit_update(mapper, connection, target):
 @event.listens_for(Sala, 'after_insert')
 def propagate_sala_insert(mapper, connection, target):
     """Propaga nueva sala a otros nodos del cluster."""
-    global _is_replicating
-    if _is_replicating:
-        return
+    global _is_replicating, _is_2pc_context
+    if _is_replicating or _is_2pc_context:
+        return  # 2PC ya se encarga de replicar
 
     try:
         from bully.data_sync import get_synchronizer
@@ -479,9 +486,9 @@ def propagate_sala_insert(mapper, connection, target):
 @event.listens_for(Doctor, 'after_insert')
 def propagate_doctor_insert(mapper, connection, target):
     """Propaga nuevo doctor a otros nodos del cluster."""
-    global _is_replicating
-    if _is_replicating:
-        return
+    global _is_replicating, _is_2pc_context
+    if _is_replicating or _is_2pc_context:
+        return  # 2PC ya se encarga de replicar
 
     try:
         from bully.data_sync import get_synchronizer
@@ -505,9 +512,9 @@ def propagate_doctor_insert(mapper, connection, target):
 @event.listens_for(Cama, 'after_insert')
 def propagate_cama_insert(mapper, connection, target):
     """Propaga nueva cama a otros nodos del cluster."""
-    global _is_replicating
-    if _is_replicating:
-        return
+    global _is_replicating, _is_2pc_context
+    if _is_replicating or _is_2pc_context:
+        return  # 2PC ya se encarga de replicar
 
     try:
         from bully.data_sync import get_synchronizer
@@ -530,9 +537,9 @@ def propagate_cama_insert(mapper, connection, target):
 @event.listens_for(TrabajadorSocial, 'after_insert')
 def propagate_trabajador_insert(mapper, connection, target):
     """Propaga nuevo trabajador social a otros nodos del cluster."""
-    global _is_replicating
-    if _is_replicating:
-        return
+    global _is_replicating, _is_2pc_context
+    if _is_replicating or _is_2pc_context:
+        return  # 2PC ya se encarga de replicar
 
     try:
         from bully.data_sync import get_synchronizer

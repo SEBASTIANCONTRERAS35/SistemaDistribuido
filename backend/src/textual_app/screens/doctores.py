@@ -26,6 +26,92 @@ from textual.binding import Binding
 from rich.text import Text
 
 
+class CredencialesModal(ModalScreen):
+    """Modal para mostrar credenciales generadas"""
+
+    CSS = """
+    CredencialesModal {
+        align: center middle;
+    }
+
+    #cred-container {
+        width: 60;
+        height: auto;
+        background: $surface;
+        border: thick $success;
+        padding: 1 2;
+    }
+
+    #cred-title {
+        text-align: center;
+        text-style: bold;
+        color: $success;
+        margin-bottom: 1;
+    }
+
+    #cred-warning {
+        text-align: center;
+        color: $warning;
+        margin-bottom: 1;
+    }
+
+    .cred-section {
+        background: $panel;
+        border: solid $border;
+        padding: 1;
+        margin: 1 0;
+    }
+
+    .cred-label {
+        color: $text-muted;
+    }
+
+    .cred-value {
+        text-style: bold;
+        color: $primary;
+        margin-left: 1;
+    }
+
+    #cred-buttons {
+        margin-top: 1;
+        height: 3;
+        align: center middle;
+    }
+    """
+
+    def __init__(self, tipo: str, nombre: str, username: str, password: str):
+        super().__init__()
+        self.tipo = tipo
+        self.nombre = nombre
+        self.username = username
+        self.password = password
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="cred-container"):
+            yield Label(f"✅ {self.tipo.upper()} CREADO", id="cred-title")
+            yield Label("⚠️ GUARDA ESTAS CREDENCIALES", id="cred-warning")
+
+            with Vertical(classes="cred-section"):
+                yield Label(f"Nombre: {self.nombre}")
+
+            with Vertical(classes="cred-section"):
+                with Horizontal():
+                    yield Label("Usuario:", classes="cred-label")
+                    yield Label(self.username, classes="cred-value")
+
+            with Vertical(classes="cred-section"):
+                with Horizontal():
+                    yield Label("Contraseña:", classes="cred-label")
+                    yield Label(self.password, classes="cred-value")
+
+            with Horizontal(id="cred-buttons"):
+                yield Button("✓ Entendido", variant="success", id="btn-ok")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-ok":
+            self.dismiss()
+
+
 class CrearDoctorModal(ModalScreen[Dict[str, Any]]):
     """Modal para crear un nuevo doctor"""
 
@@ -483,11 +569,13 @@ class DoctoresScreen(Screen):
                 commit_data = result.get('commit_data', {})
                 username = commit_data.get('username', 'N/A')
                 password = commit_data.get('password', 'N/A')
-                self.notify(
-                    f"✅ Doctor creado!\nUsuario: {username}\nContraseña: {password}",
-                    severity="information",
-                    timeout=10
-                )
+                # Mostrar modal con credenciales
+                self.app.push_screen(CredencialesModal(
+                    tipo="Doctor",
+                    nombre=data['nombre'],
+                    username=username,
+                    password=password
+                ))
                 self.load_doctores()  # Refresh table
             else:
                 self.notify(f"❌ Error: {result.get('error')}", severity="error")
@@ -523,4 +611,4 @@ class DoctoresScreen(Screen):
 
 
 # Export
-__all__ = ['DoctoresScreen', 'CrearDoctorModal']
+__all__ = ['DoctoresScreen', 'CrearDoctorModal', 'CredencialesModal']

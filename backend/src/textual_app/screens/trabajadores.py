@@ -649,11 +649,14 @@ class TrabajadoresScreen(Screen):
                 commit_data = result.get('commit_data', {})
                 username = commit_data.get('username', 'N/A')
                 password = commit_data.get('password', 'N/A')
-                self.notify(
-                    f"✅ Trabajador creado!\nUsuario: {username}\nContraseña: {password}",
-                    severity="information",
-                    timeout=10
-                )
+                # Mostrar modal con credenciales
+                from textual_app.screens.doctores import CredencialesModal
+                self.app.push_screen(CredencialesModal(
+                    tipo="Trabajador Social",
+                    nombre=data['nombre'],
+                    username=username,
+                    password=password
+                ))
                 self.load_trabajadores()  # Refresh table
             else:
                 self.notify(f"❌ Error: {result.get('error')}", severity="error")

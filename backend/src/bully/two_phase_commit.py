@@ -474,27 +474,37 @@ class TwoPhaseCommitCoordinator:
             {'success': bool, 'error': str or None, 'data': dict}
         """
         with self.flask_app.app_context():
-            from models import db, Doctor, Cama, Paciente, VisitaEmergencia
+            from models import db, Doctor, Cama, Paciente, VisitaEmergencia, set_2pc_context
             from datetime import datetime
 
             data = txn.data
 
             try:
+                # Activar contexto 2PC para evitar doble propagación
+                # Los event listeners verifican este flag y no propagan si está activo
+                set_2pc_context(True)
+
                 if txn.operation == 'CREATE_VISIT':
-                    return self._create_visit_local(data)
+                    result = self._create_visit_local(data)
                 elif txn.operation == 'CLOSE_VISIT':
-                    return self._close_visit_local(data)
+                    result = self._close_visit_local(data)
                 elif txn.operation == 'CREATE_DOCTOR':
-                    return self._create_doctor_local(data)
+                    result = self._create_doctor_local(data)
                 elif txn.operation == 'CREATE_TRABAJADOR':
-                    return self._create_trabajador_local(data)
+                    result = self._create_trabajador_local(data)
                 else:
-                    return {'success': False, 'error': f'Unknown operation: {txn.operation}'}
+                    result = {'success': False, 'error': f'Unknown operation: {txn.operation}'}
+
+                return result
 
             except Exception as e:
                 db.session.rollback()
                 logger.error(f"[2PC] Local transaction error: {e}")
                 return {'success': False, 'error': str(e)}
+
+            finally:
+                # Siempre desactivar el contexto 2PC
+                set_2pc_context(False)
 
     def _create_visit_local(self, data: Dict) -> Dict[str, Any]:
         """Crea una visita localmente."""
@@ -851,7 +861,11 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
         )
 
     with flask_app.app_context():
+        from models import set_2pc_context
         try:
+            # Activar contexto 2PC para evitar doble propagación
+            set_2pc_context(True)
+
             operation = pending_txn['operation']
             txn_data = pending_txn['data']
 
@@ -1041,6 +1055,10 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                 timestamp=time.time(),
                 data={'ack': False, 'reason': str(e)}
             )
+
+        finally:
+            # Siempre desactivar el contexto 2PC
+            set_2pc_context(False)
 
 
 def _handle_abort(message, node_id) -> 'Message':
