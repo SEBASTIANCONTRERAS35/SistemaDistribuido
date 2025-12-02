@@ -597,18 +597,35 @@ class DoctoresScreen(Screen):
             recurso_tipo = 'DOCTOR_CREATE'
             recurso_id = 0  # Recurso global, no por sala
 
-            logger.warning(f"[DOCTOR-CREATE] Solicitando bloqueo distribuido global DOCTOR_CREATE")
-            lock_acquired = solicitar_bloqueo_distribuido(
-                self.bully_manager,
-                self.flask_app,
-                recurso_tipo,
-                recurso_id,
-                timeout=10.0
-            )
+            # Retry con backoff exponencial para manejar creaciones simultáneas
+            import time
+            max_retries = 3
+            base_delay = 1.0
+            lock_acquired = False
+
+            for attempt in range(max_retries):
+                logger.info(f"[DOCTOR-CREATE] Intento {attempt + 1}/{max_retries} de obtener bloqueo global DOCTOR_CREATE")
+
+                lock_acquired = solicitar_bloqueo_distribuido(
+                    self.bully_manager,
+                    self.flask_app,
+                    recurso_tipo,
+                    recurso_id,
+                    timeout=10.0
+                )
+
+                if lock_acquired:
+                    logger.info(f"[DOCTOR-CREATE] Bloqueo adquirido en intento {attempt + 1}")
+                    break
+
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # 1s, 2s
+                    logger.info(f"[DOCTOR-CREATE] Lock ocupado, esperando {delay}s antes de reintentar...")
+                    time.sleep(delay)
 
             if not lock_acquired:
-                logger.warning(f"[DOCTOR-CREATE] No se pudo obtener bloqueo global DOCTOR_CREATE")
-                return {'success': False, 'error': 'No se pudo obtener bloqueo para crear doctor (otro nodo creando)'}
+                logger.warning(f"[DOCTOR-CREATE] No se pudo obtener bloqueo después de {max_retries} intentos")
+                return {'success': False, 'error': 'No se pudo obtener bloqueo para crear doctor (otro nodo creando). Intente de nuevo.'}
 
             try:
                 logger.warning(f"[DOCTOR-CREATE] Bloqueo adquirido, solicitando ID al líder...")
