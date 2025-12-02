@@ -665,30 +665,62 @@ class TrabajadoresScreen(Screen):
             self.notify(f"❌ Error: {str(e)}", severity="error")
 
     def _execute_create_trabajador_2pc(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute 2PC for creating trabajador (runs in thread pool)"""
+        """Execute 2PC for creating trabajador (runs in thread pool) with distributed lock"""
         with self.flask_app.app_context():
             from bully.two_phase_commit import TwoPhaseCommitCoordinator
+            from bully.distributed_locks import solicitar_bloqueo_distribuido, liberar_bloqueo_distribuido
+            import logging
+            logger = logging.getLogger(__name__)
 
-            coordinator = TwoPhaseCommitCoordinator(self.bully_manager, self.flask_app)
-            txn_id = coordinator.begin_transaction('CREATE_TRABAJADOR', data)
-            result = coordinator.execute_2pc(txn_id)
+            # Bloqueo distribuido para serializar creación de trabajadores en la sala
+            # Esto evita que 2 nodos creen trabajadores simultáneamente
+            recurso_tipo = 'SALA_TRABAJADOR'
+            recurso_id = data['sala_id']
 
-            # Get commit data if successful
-            if result.get('success'):
-                from models import TrabajadorSocial
-                trabajador = TrabajadorSocial.query.filter_by(
-                    nombre=data['nombre'],
-                    id_sala=data['sala_id']
-                ).order_by(TrabajadorSocial.id_trabajador.desc()).first()
+            logger.warning(f"[TRABAJADOR-CREATE] Solicitando bloqueo distribuido SALA_TRABAJADOR_{recurso_id}")
+            lock_acquired = solicitar_bloqueo_distribuido(
+                self.bully_manager,
+                self.flask_app,
+                recurso_tipo,
+                recurso_id,
+                timeout=10.0
+            )
 
-                if trabajador:
-                    result['commit_data'] = {
-                        'id_trabajador': trabajador.id_trabajador,
-                        'username': f"social{trabajador.id_trabajador}",
-                        'password': '1234'
-                    }
+            if not lock_acquired:
+                logger.warning(f"[TRABAJADOR-CREATE] No se pudo obtener bloqueo para sala {recurso_id}")
+                return {'success': False, 'error': 'No se pudo obtener bloqueo para crear trabajador (sala ocupada)'}
 
-            return result
+            try:
+                logger.warning(f"[TRABAJADOR-CREATE] Bloqueo adquirido, iniciando 2PC")
+                coordinator = TwoPhaseCommitCoordinator(self.bully_manager, self.flask_app)
+                txn_id = coordinator.begin_transaction('CREATE_TRABAJADOR', data)
+                result = coordinator.execute_2pc(txn_id)
+
+                # Get commit data if successful
+                if result.get('success'):
+                    from models import TrabajadorSocial
+                    trabajador = TrabajadorSocial.query.filter_by(
+                        nombre=data['nombre'],
+                        id_sala=data['sala_id']
+                    ).order_by(TrabajadorSocial.id_trabajador.desc()).first()
+
+                    if trabajador:
+                        result['commit_data'] = {
+                            'id_trabajador': trabajador.id_trabajador,
+                            'username': f"social{trabajador.id_trabajador}",
+                            'password': '1234'
+                        }
+
+                return result
+
+            finally:
+                # Siempre liberar el bloqueo
+                logger.warning(f"[TRABAJADOR-CREATE] Liberando bloqueo SALA_TRABAJADOR_{recurso_id}")
+                liberar_bloqueo_distribuido(
+                    self.bully_manager,
+                    recurso_tipo,
+                    recurso_id
+                )
 
 
 # Export

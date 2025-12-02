@@ -584,30 +584,62 @@ class DoctoresScreen(Screen):
             self.notify(f"❌ Error: {str(e)}", severity="error")
 
     def _execute_create_doctor_2pc(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute 2PC for creating doctor (runs in thread pool)"""
+        """Execute 2PC for creating doctor (runs in thread pool) with distributed lock"""
         with self.flask_app.app_context():
             from bully.two_phase_commit import TwoPhaseCommitCoordinator
+            from bully.distributed_locks import solicitar_bloqueo_distribuido, liberar_bloqueo_distribuido
+            import logging
+            logger = logging.getLogger(__name__)
 
-            coordinator = TwoPhaseCommitCoordinator(self.bully_manager, self.flask_app)
-            txn_id = coordinator.begin_transaction('CREATE_DOCTOR', data)
-            result = coordinator.execute_2pc(txn_id)
+            # Bloqueo distribuido para serializar creación de doctores en la sala
+            # Esto evita que 2 nodos creen doctores simultáneamente
+            recurso_tipo = 'SALA_DOCTOR'
+            recurso_id = data['sala_id']
 
-            # Get commit data if successful
-            if result.get('success'):
-                from models import Doctor
-                doctor = Doctor.query.filter_by(
-                    nombre=data['nombre'],
-                    id_sala=data['sala_id']
-                ).order_by(Doctor.id_doctor.desc()).first()
+            logger.warning(f"[DOCTOR-CREATE] Solicitando bloqueo distribuido SALA_DOCTOR_{recurso_id}")
+            lock_acquired = solicitar_bloqueo_distribuido(
+                self.bully_manager,
+                self.flask_app,
+                recurso_tipo,
+                recurso_id,
+                timeout=10.0
+            )
 
-                if doctor:
-                    result['commit_data'] = {
-                        'id_doctor': doctor.id_doctor,
-                        'username': f"doctor{doctor.id_doctor}",
-                        'password': f"doctor{doctor.id_doctor}"
-                    }
+            if not lock_acquired:
+                logger.warning(f"[DOCTOR-CREATE] No se pudo obtener bloqueo para sala {recurso_id}")
+                return {'success': False, 'error': 'No se pudo obtener bloqueo para crear doctor (sala ocupada)'}
 
-            return result
+            try:
+                logger.warning(f"[DOCTOR-CREATE] Bloqueo adquirido, iniciando 2PC")
+                coordinator = TwoPhaseCommitCoordinator(self.bully_manager, self.flask_app)
+                txn_id = coordinator.begin_transaction('CREATE_DOCTOR', data)
+                result = coordinator.execute_2pc(txn_id)
+
+                # Get commit data if successful
+                if result.get('success'):
+                    from models import Doctor
+                    doctor = Doctor.query.filter_by(
+                        nombre=data['nombre'],
+                        id_sala=data['sala_id']
+                    ).order_by(Doctor.id_doctor.desc()).first()
+
+                    if doctor:
+                        result['commit_data'] = {
+                            'id_doctor': doctor.id_doctor,
+                            'username': f"doctor{doctor.id_doctor}",
+                            'password': f"doctor{doctor.id_doctor}"
+                        }
+
+                return result
+
+            finally:
+                # Siempre liberar el bloqueo
+                logger.warning(f"[DOCTOR-CREATE] Liberando bloqueo SALA_DOCTOR_{recurso_id}")
+                liberar_bloqueo_distribuido(
+                    self.bully_manager,
+                    recurso_tipo,
+                    recurso_id
+                )
 
 
 # Export

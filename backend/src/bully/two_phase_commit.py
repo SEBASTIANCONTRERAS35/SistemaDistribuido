@@ -327,8 +327,13 @@ class TwoPhaseCommitCoordinator:
 
         # Replicación HTTP como fallback para nodos que no respondieron al 2PC
         # Esto asegura que los datos lleguen incluso si el TCP falló
-        if success and txn.operation == 'CREATE_VISIT':
-            self._replicate_visit_http_fallback(local_result, commit_acks, len(otros_nodos))
+        if success:
+            if txn.operation == 'CREATE_VISIT':
+                self._replicate_visit_http_fallback(local_result, commit_acks, len(otros_nodos))
+            elif txn.operation == 'CREATE_DOCTOR':
+                self._replicate_doctor_http_fallback(local_result, txn.data, commit_acks, len(otros_nodos))
+            elif txn.operation == 'CREATE_TRABAJADOR':
+                self._replicate_trabajador_http_fallback(local_result, txn.data, commit_acks, len(otros_nodos))
 
         return {'success': success}
 
@@ -377,6 +382,66 @@ class TwoPhaseCommitCoordinator:
 
         except Exception as e:
             logger.warning(f"[2PC] HTTP fallback replication failed: {e}")
+
+    def _replicate_doctor_http_fallback(self, local_result: Dict, txn_data: Dict, commit_acks: int, total_nodes: int):
+        """
+        Replica doctor vía HTTP como fallback si algunos nodos no confirmaron por TCP.
+
+        Args:
+            local_result: Resultado del commit local con datos del doctor
+            txn_data: Datos originales de la transacción
+            commit_acks: Número de nodos que confirmaron por TCP
+            total_nodes: Total de nodos en el cluster
+        """
+        # Siempre hacer fallback HTTP para doctores (garantizar sincronización entre Macs)
+        try:
+            from bully.data_sync import get_synchronizer
+            sync = get_synchronizer()
+            if sync:
+                doctor_data = local_result.get('data', {})
+                if not doctor_data.get('id_doctor'):
+                    return
+
+                sync.propagate_to_cluster('doctor', 'INSERT', {
+                    'id_doctor': doctor_data.get('id_doctor'),
+                    'nombre': txn_data.get('nombre'),
+                    'especialidad': txn_data.get('especialidad'),
+                    'id_sala': txn_data.get('sala_id'),
+                    'disponible': True,
+                    'activo': True
+                })
+                logger.info(f"[2PC] HTTP fallback doctor replication: id={doctor_data.get('id_doctor')}")
+        except Exception as e:
+            logger.warning(f"[2PC] HTTP fallback doctor replication failed: {e}")
+
+    def _replicate_trabajador_http_fallback(self, local_result: Dict, txn_data: Dict, commit_acks: int, total_nodes: int):
+        """
+        Replica trabajador social vía HTTP como fallback si algunos nodos no confirmaron por TCP.
+
+        Args:
+            local_result: Resultado del commit local con datos del trabajador
+            txn_data: Datos originales de la transacción
+            commit_acks: Número de nodos que confirmaron por TCP
+            total_nodes: Total de nodos en el cluster
+        """
+        # Siempre hacer fallback HTTP para trabajadores (garantizar sincronización entre Macs)
+        try:
+            from bully.data_sync import get_synchronizer
+            sync = get_synchronizer()
+            if sync:
+                trabajador_data = local_result.get('data', {})
+                if not trabajador_data.get('id_trabajador'):
+                    return
+
+                sync.propagate_to_cluster('trabajador', 'INSERT', {
+                    'id_trabajador': trabajador_data.get('id_trabajador'),
+                    'nombre': txn_data.get('nombre'),
+                    'id_sala': txn_data.get('sala_id'),
+                    'activo': True
+                })
+                logger.info(f"[2PC] HTTP fallback trabajador replication: id={trabajador_data.get('id_trabajador')}")
+        except Exception as e:
+            logger.warning(f"[2PC] HTTP fallback trabajador replication failed: {e}")
 
     def _abort_phase(self, txn: Transaction) -> None:
         """
@@ -976,7 +1041,7 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                 from models import Doctor as DoctorModel
                 from auth import crear_usuario_para_personal
 
-                # Verificar si ya existe (BD compartida)
+                # Verificar si ya existe (BD compartida o ya replicado)
                 commit_data = data.get('commit_data', {})
                 id_doctor_coord = commit_data.get('id_doctor')
                 if id_doctor_coord:
@@ -991,7 +1056,8 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                             data={'ack': True}
                         )
 
-                # Crear doctor
+                # Crear doctor CON EL ID DEL COORDINADOR para consistencia entre Macs
+                # Si hay id_doctor del coordinador, usarlo para mantener IDs sincronizados
                 doctor_nuevo = DoctorModel(
                     nombre=txn_data['nombre'],
                     especialidad=txn_data['especialidad'],
@@ -999,16 +1065,19 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                     disponible=True,
                     activo=True
                 )
+                # Asignar el ID del coordinador si está disponible (BDs separadas)
+                if id_doctor_coord:
+                    doctor_nuevo.id_doctor = id_doctor_coord
                 db.session.add(doctor_nuevo)
                 db.session.flush()
                 crear_usuario_para_personal('doctor', doctor_nuevo.id_doctor)
-                logger.warning(f"[2PC-COMMIT] Doctor creado: {doctor_nuevo.id_doctor}")
+                logger.warning(f"[2PC-COMMIT] Doctor creado: {doctor_nuevo.id_doctor} (id_coord={id_doctor_coord})")
 
             elif operation == 'CREATE_TRABAJADOR':
                 from models import TrabajadorSocial
                 from auth import crear_usuario_para_personal
 
-                # Verificar si ya existe (BD compartida)
+                # Verificar si ya existe (BD compartida o ya replicado)
                 commit_data = data.get('commit_data', {})
                 id_trabajador_coord = commit_data.get('id_trabajador')
                 if id_trabajador_coord:
@@ -1023,16 +1092,19 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                             data={'ack': True}
                         )
 
-                # Crear trabajador
+                # Crear trabajador CON EL ID DEL COORDINADOR para consistencia entre Macs
                 trabajador_nuevo = TrabajadorSocial(
                     nombre=txn_data['nombre'],
                     id_sala=txn_data['sala_id'],
                     activo=True
                 )
+                # Asignar el ID del coordinador si está disponible (BDs separadas)
+                if id_trabajador_coord:
+                    trabajador_nuevo.id_trabajador = id_trabajador_coord
                 db.session.add(trabajador_nuevo)
                 db.session.flush()
                 crear_usuario_para_personal('trabajador_social', trabajador_nuevo.id_trabajador)
-                logger.warning(f"[2PC-COMMIT] Trabajador creado: {trabajador_nuevo.id_trabajador}")
+                logger.warning(f"[2PC-COMMIT] Trabajador creado: {trabajador_nuevo.id_trabajador} (id_coord={id_trabajador_coord})")
 
             # Usar retry con backoff para manejar "database is locked"
             _commit_with_retry_module(db.session)
