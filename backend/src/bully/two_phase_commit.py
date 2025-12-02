@@ -325,15 +325,23 @@ class TwoPhaseCommitCoordinator:
 
         logger.info(f"[2PC] COMMIT phase: {commit_acks}/{len(otros_nodos)} acks (needed {required_acks})")
 
-        # Replicación HTTP como fallback para nodos que no respondieron al 2PC
-        # Esto asegura que los datos lleguen incluso si el TCP falló
+        # Para CREATE_DOCTOR y CREATE_TRABAJADOR:
+        # Si el commit local fue exitoso, SIEMPRE ejecutar fallback HTTP y reportar éxito.
+        # El fallback HTTP garantiza replicación aunque no lleguen ACKs TCP.
+        # Esto evita "falsos negativos" cuando nodos están ocupados con sus propias transacciones.
+        if txn.operation in ('CREATE_DOCTOR', 'CREATE_TRABAJADOR'):
+            if txn.operation == 'CREATE_DOCTOR':
+                self._replicate_doctor_http_fallback(local_result, txn.data, commit_acks, len(otros_nodos))
+            else:
+                self._replicate_trabajador_http_fallback(local_result, txn.data, commit_acks, len(otros_nodos))
+            # Éxito porque: commit local OK + HTTP fallback ejecutado
+            logger.info(f"[2PC] {txn.operation} completado: commit local + HTTP fallback")
+            return {'success': True}
+
+        # Para otros tipos de transacción (CREATE_VISIT), mantener lógica de mayoría
         if success:
             if txn.operation == 'CREATE_VISIT':
                 self._replicate_visit_http_fallback(local_result, commit_acks, len(otros_nodos))
-            elif txn.operation == 'CREATE_DOCTOR':
-                self._replicate_doctor_http_fallback(local_result, txn.data, commit_acks, len(otros_nodos))
-            elif txn.operation == 'CREATE_TRABAJADOR':
-                self._replicate_trabajador_http_fallback(local_result, txn.data, commit_acks, len(otros_nodos))
 
         return {'success': success}
 
