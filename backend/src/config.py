@@ -32,6 +32,17 @@ class Config:
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
+    # Engine options para mejorar concurrencia SQLite
+    # Resuelve "database is locked" cuando múltiples nodos en la misma Mac
+    # comparten el mismo archivo emergencias.db
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'connect_args': {
+            'timeout': 30,           # 30 segundos (default es 5)
+            'check_same_thread': False  # Permitir acceso desde múltiples threads
+        },
+        'pool_pre_ping': True,       # Verificar conexiones antes de usar
+    }
+
     # Puerto Flask - usar variable de entorno o auto-asignar (0 = OS auto-asigna)
     FLASK_PORT = int(os.getenv('FLASK_PORT', 0))
 

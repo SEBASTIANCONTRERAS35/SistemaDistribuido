@@ -62,6 +62,44 @@ TWO_PC_RESPONSE = 'TWO_PC_RESPONSE'
 
 
 # ============================================================================
+# HELPER: COMMIT CON RETRY PARA SQLITE CONCURRENCY
+# ============================================================================
+
+def _commit_with_retry_module(db_session, max_retries=5):
+    """
+    Commit con retry y backoff exponencial para SQLite locks.
+
+    Resuelve el error "database is locked" cuando múltiples nodos
+    en la misma Mac comparten el mismo archivo emergencias.db.
+
+    Args:
+        db_session: session de SQLAlchemy (db.session)
+        max_retries: Número máximo de reintentos
+
+    Returns:
+        True si el commit fue exitoso
+
+    Raises:
+        Exception si falla después de todos los reintentos
+    """
+    for attempt in range(max_retries):
+        try:
+            db_session.commit()
+            return True
+        except Exception as e:
+            error_str = str(e).lower()
+            if 'database is locked' in error_str or 'database is busy' in error_str:
+                wait_time = 0.5 * (2 ** attempt)  # 0.5, 1, 2, 4, 8 segundos
+                logger.warning(f"[2PC] Database locked, retry {attempt+1}/{max_retries} in {wait_time}s")
+                db_session.rollback()
+                time.sleep(wait_time)
+                continue
+            # Si es otro error, no reintentar
+            raise
+    raise Exception("Max retries exceeded for database commit - database is locked")
+
+
+# ============================================================================
 # COORDINADOR 2PC
 # ============================================================================
 
@@ -499,7 +537,7 @@ class TwoPhaseCommitCoordinator:
             estado='activa'
         )
         db.session.add(visita)
-        db.session.commit()
+        _commit_with_retry_module(db.session)
 
         logger.info(f"[2PC] Local CREATE_VISIT committed: folio={visita.folio}")
         return {
@@ -532,7 +570,7 @@ class TwoPhaseCommitCoordinator:
         visita.estado = 'completada'
         visita.fecha_cierre = datetime.utcnow()
 
-        db.session.commit()
+        _commit_with_retry_module(db.session)
 
         logger.info(f"[2PC] Local CLOSE_VISIT committed: folio={data['folio']}")
         return {'success': True, 'data': {'folio': data['folio']}}
@@ -555,7 +593,7 @@ class TwoPhaseCommitCoordinator:
         # Crear usuario automáticamente
         user_result = crear_usuario_para_personal('doctor', doctor.id_doctor)
 
-        db.session.commit()
+        _commit_with_retry_module(db.session)
 
         logger.info(f"[2PC] Local CREATE_DOCTOR committed: id={doctor.id_doctor}, user={user_result.get('username')}")
         return {
@@ -583,7 +621,7 @@ class TwoPhaseCommitCoordinator:
         # Crear usuario automáticamente
         user_result = crear_usuario_para_personal('trabajador_social', trabajador.id_trabajador)
 
-        db.session.commit()
+        _commit_with_retry_module(db.session)
 
         logger.info(f"[2PC] Local CREATE_TRABAJADOR committed: id={trabajador.id_trabajador}, user={user_result.get('username')}")
         return {
@@ -982,7 +1020,8 @@ def _handle_commit(message, flask_app, node_id) -> 'Message':
                 crear_usuario_para_personal('trabajador_social', trabajador_nuevo.id_trabajador)
                 logger.warning(f"[2PC-COMMIT] Trabajador creado: {trabajador_nuevo.id_trabajador}")
 
-            db.session.commit()
+            # Usar retry con backoff para manejar "database is locked"
+            _commit_with_retry_module(db.session)
             remove_pending_txn(txn_id)
 
             logger.info(f"[2PC-COMMIT] Transaction committed: {txn_id}")

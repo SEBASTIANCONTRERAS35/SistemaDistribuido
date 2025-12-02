@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify
 from config import Config
 from models import db, Doctor, Cama, Sala, Paciente, VisitaEmergencia, TrabajadorSocial, Consecutivo
 from auth import init_default_users, init_all_salas_resources, init_sala_for_node
+from sqlalchemy import event
 import logging
 import os
 import threading
@@ -28,6 +29,18 @@ def create_app():
 
     # Inicializar SQLAlchemy (mantener setup existente sin cambios)
     db.init_app(app)
+
+    # Configurar SQLite para mejor concurrencia (WAL mode)
+    # Resuelve "database is locked" cuando múltiples nodos comparten emergencias.db
+    def _set_sqlite_pragma(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")      # Write-Ahead Logging
+        cursor.execute("PRAGMA busy_timeout=30000")    # 30 segundos
+        cursor.execute("PRAGMA synchronous=NORMAL")    # Balance velocidad/seguridad
+        cursor.close()
+
+    with app.app_context():
+        event.listen(db.engine, "connect", _set_sqlite_pragma)
 
     # Asegurar que existe el directorio de datos
     data_dir = os.path.join(os.path.dirname(__file__), '../data')
