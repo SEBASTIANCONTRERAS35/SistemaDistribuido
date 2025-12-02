@@ -672,12 +672,13 @@ class TrabajadoresScreen(Screen):
             import logging
             logger = logging.getLogger(__name__)
 
-            # Bloqueo distribuido para serializar creación de trabajadores en la sala
-            # Esto evita que 2 nodos creen trabajadores simultáneamente
-            recurso_tipo = 'SALA_TRABAJADOR'
-            recurso_id = data['sala_id']
+            # Bloqueo distribuido GLOBAL para serializar creación de trabajadores
+            # Usar recurso único para evitar conflictos de ID entre nodos
+            # (antes usábamos SALA_TRABAJADOR_{sala_id} pero permitía creaciones simultáneas en diferentes salas)
+            recurso_tipo = 'TRABAJADOR_CREATE'
+            recurso_id = 0  # Recurso global, no por sala
 
-            logger.warning(f"[TRABAJADOR-CREATE] Solicitando bloqueo distribuido SALA_TRABAJADOR_{recurso_id}")
+            logger.warning(f"[TRABAJADOR-CREATE] Solicitando bloqueo distribuido global TRABAJADOR_CREATE")
             lock_acquired = solicitar_bloqueo_distribuido(
                 self.bully_manager,
                 self.flask_app,
@@ -687,11 +688,31 @@ class TrabajadoresScreen(Screen):
             )
 
             if not lock_acquired:
-                logger.warning(f"[TRABAJADOR-CREATE] No se pudo obtener bloqueo para sala {recurso_id}")
-                return {'success': False, 'error': 'No se pudo obtener bloqueo para crear trabajador (sala ocupada)'}
+                logger.warning(f"[TRABAJADOR-CREATE] No se pudo obtener bloqueo global TRABAJADOR_CREATE")
+                return {'success': False, 'error': 'No se pudo obtener bloqueo para crear trabajador (otro nodo creando)'}
 
             try:
-                logger.warning(f"[TRABAJADOR-CREATE] Bloqueo adquirido, iniciando 2PC")
+                logger.warning(f"[TRABAJADOR-CREATE] Bloqueo adquirido, solicitando ID al líder...")
+
+                # Solicitar ID al líder ANTES del 2PC para garantizar unicidad
+                from bully.id_manager import request_id_from_leader, generate_fallback_id
+
+                pre_assigned_id = request_id_from_leader(
+                    self.bully_manager,
+                    self.flask_app,
+                    'trabajador',
+                    timeout=5.0
+                )
+
+                if pre_assigned_id is None:
+                    # Fallback: generar ID con prefijo de nodo si líder no responde
+                    logger.warning(f"[TRABAJADOR-CREATE] Líder no respondió, usando fallback ID")
+                    pre_assigned_id = generate_fallback_id(self.bully_manager.node_id, 'trabajador')
+
+                # Agregar ID pre-asignado a los datos para el 2PC
+                data['pre_assigned_id'] = pre_assigned_id
+                logger.warning(f"[TRABAJADOR-CREATE] ID pre-asignado: {pre_assigned_id}, iniciando 2PC")
+
                 coordinator = TwoPhaseCommitCoordinator(self.bully_manager, self.flask_app)
                 txn_id = coordinator.begin_transaction('CREATE_TRABAJADOR', data)
                 result = coordinator.execute_2pc(txn_id)
@@ -699,10 +720,15 @@ class TrabajadoresScreen(Screen):
                 # Get commit data if successful
                 if result.get('success'):
                     from models import TrabajadorSocial
-                    trabajador = TrabajadorSocial.query.filter_by(
-                        nombre=data['nombre'],
-                        id_sala=data['sala_id']
-                    ).order_by(TrabajadorSocial.id_trabajador.desc()).first()
+                    # Buscar por ID pre-asignado primero
+                    trabajador = TrabajadorSocial.query.get(pre_assigned_id)
+
+                    # Fallback: buscar por nombre si no existe con ese ID
+                    if not trabajador:
+                        trabajador = TrabajadorSocial.query.filter_by(
+                            nombre=data['nombre'],
+                            id_sala=data['sala_id']
+                        ).order_by(TrabajadorSocial.id_trabajador.desc()).first()
 
                     if trabajador:
                         result['commit_data'] = {
@@ -715,7 +741,7 @@ class TrabajadoresScreen(Screen):
 
             finally:
                 # Siempre liberar el bloqueo
-                logger.warning(f"[TRABAJADOR-CREATE] Liberando bloqueo SALA_TRABAJADOR_{recurso_id}")
+                logger.warning(f"[TRABAJADOR-CREATE] Liberando bloqueo global TRABAJADOR_CREATE")
                 liberar_bloqueo_distribuido(
                     self.bully_manager,
                     recurso_tipo,

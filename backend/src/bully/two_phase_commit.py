@@ -663,6 +663,9 @@ class TwoPhaseCommitCoordinator:
         from models import db, Doctor
         from auth import crear_usuario_para_personal
 
+        # Usar ID pre-asignado por el líder si está disponible
+        pre_assigned_id = data.get('pre_assigned_id')
+
         doctor = Doctor(
             nombre=data['nombre'],
             especialidad=data['especialidad'],
@@ -670,15 +673,21 @@ class TwoPhaseCommitCoordinator:
             disponible=True,
             activo=True
         )
+
+        # Asignar ID fijo si viene del líder
+        if pre_assigned_id:
+            doctor.id_doctor = pre_assigned_id
+
         db.session.add(doctor)
-        db.session.flush()  # Para obtener el ID generado
+        db.session.flush()  # Para obtener el ID (si no se pre-asignó)
 
         # Crear usuario automáticamente
         user_result = crear_usuario_para_personal('doctor', doctor.id_doctor)
 
         _commit_with_retry_module(db.session)
 
-        logger.info(f"[2PC] Local CREATE_DOCTOR committed: id={doctor.id_doctor}, user={user_result.get('username')}")
+        logger.info(f"[2PC] Local CREATE_DOCTOR committed: id={doctor.id_doctor}, "
+                   f"pre_assigned={pre_assigned_id}, user={user_result.get('username')}")
         return {
             'success': True,
             'data': {
@@ -693,20 +702,29 @@ class TwoPhaseCommitCoordinator:
         from models import db, TrabajadorSocial
         from auth import crear_usuario_para_personal
 
+        # Usar ID pre-asignado por el líder si está disponible
+        pre_assigned_id = data.get('pre_assigned_id')
+
         trabajador = TrabajadorSocial(
             nombre=data['nombre'],
             id_sala=data['sala_id'],
             activo=True
         )
+
+        # Asignar ID fijo si viene del líder
+        if pre_assigned_id:
+            trabajador.id_trabajador = pre_assigned_id
+
         db.session.add(trabajador)
-        db.session.flush()  # Para obtener el ID generado
+        db.session.flush()  # Para obtener el ID (si no se pre-asignó)
 
         # Crear usuario automáticamente
         user_result = crear_usuario_para_personal('trabajador_social', trabajador.id_trabajador)
 
         _commit_with_retry_module(db.session)
 
-        logger.info(f"[2PC] Local CREATE_TRABAJADOR committed: id={trabajador.id_trabajador}, user={user_result.get('username')}")
+        logger.info(f"[2PC] Local CREATE_TRABAJADOR committed: id={trabajador.id_trabajador}, "
+                   f"pre_assigned={pre_assigned_id}, user={user_result.get('username')}")
         return {
             'success': True,
             'data': {

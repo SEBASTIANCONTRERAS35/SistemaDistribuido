@@ -485,11 +485,28 @@ def _replicate_sala(operation, data):
 
 
 def _replicate_doctor(operation, data):
-    """Helper para replicar doctor."""
+    """Helper para replicar doctor con lógica UPSERT para BDs separadas."""
     cluster_logger.info(f"[RECV] DOCTOR {operation}: id={data.get('id_doctor')}, nombre={data.get('nombre')}, sala={data.get('id_sala')}")
     if operation == 'INSERT':
-        existing = Doctor.query.filter_by(id_doctor=data['id_doctor']).first()
-        if not existing:
+        # PASO 1: Buscar si ya existe por (nombre, sala) - deduplicación por identidad real
+        same_doctor = Doctor.query.filter_by(
+            nombre=data['nombre'],
+            id_sala=data['id_sala']
+        ).first()
+
+        if same_doctor:
+            # Ya tenemos este doctor (mismo nombre, misma sala) → UPSERT
+            same_doctor.especialidad = data.get('especialidad', same_doctor.especialidad)
+            same_doctor.disponible = data.get('disponible', same_doctor.disponible)
+            same_doctor.activo = data.get('activo', same_doctor.activo)
+            cluster_logger.info(f"[RECV] DOCTOR ACTUALIZADO (UPSERT): local_id={same_doctor.id_doctor}, nombre={data['nombre']}")
+            return
+
+        # PASO 2: No existe por nombre → verificar si el ID está libre
+        existing_by_id = Doctor.query.filter_by(id_doctor=data['id_doctor']).first()
+
+        if not existing_by_id:
+            # ID libre → insertar con ID del coordinador
             doctor = Doctor(
                 id_doctor=data['id_doctor'],
                 nombre=data['nombre'],
@@ -501,7 +518,18 @@ def _replicate_doctor(operation, data):
             db.session.add(doctor)
             cluster_logger.info(f"[RECV] DOCTOR INSERTADO: id={data['id_doctor']}, {data['nombre']}")
         else:
-            cluster_logger.info(f"[RECV] DOCTOR ya existe: id={data['id_doctor']}")
+            # ID ocupado por OTRO doctor → insertar sin ID (autoincrement local)
+            cluster_logger.warning(f"[RECV] CONFLICTO ID: {data['id_doctor']} ocupado por '{existing_by_id.nombre}', insertando '{data['nombre']}' con nuevo ID")
+            doctor = Doctor(
+                nombre=data['nombre'],
+                especialidad=data.get('especialidad'),
+                disponible=data.get('disponible', True),
+                activo=data.get('activo', True),
+                id_sala=data['id_sala']
+            )
+            db.session.add(doctor)
+            db.session.flush()
+            cluster_logger.info(f"[RECV] DOCTOR INSERTADO CON NUEVO ID: id={doctor.id_doctor}, {data['nombre']}")
     elif operation == 'UPDATE':
         doctor = Doctor.query.filter_by(id_doctor=data['id_doctor']).first()
         if doctor:
@@ -576,11 +604,26 @@ def _replicate_paciente(operation, data):
 
 
 def _replicate_trabajador(operation, data):
-    """Helper para replicar trabajador social."""
+    """Helper para replicar trabajador social con lógica UPSERT para BDs separadas."""
     cluster_logger.info(f"[RECV] TRABAJADOR {operation}: id={data.get('id_trabajador')}, nombre={data.get('nombre')}, sala={data.get('id_sala')}")
     if operation == 'INSERT':
-        existing = TrabajadorSocial.query.filter_by(id_trabajador=data['id_trabajador']).first()
-        if not existing:
+        # PASO 1: Buscar si ya existe por (nombre, sala) - deduplicación por identidad real
+        same_trabajador = TrabajadorSocial.query.filter_by(
+            nombre=data['nombre'],
+            id_sala=data['id_sala']
+        ).first()
+
+        if same_trabajador:
+            # Ya tenemos este trabajador (mismo nombre, misma sala) → UPSERT
+            same_trabajador.activo = data.get('activo', same_trabajador.activo)
+            cluster_logger.info(f"[RECV] TRABAJADOR ACTUALIZADO (UPSERT): local_id={same_trabajador.id_trabajador}, nombre={data['nombre']}")
+            return
+
+        # PASO 2: No existe por nombre → verificar si el ID está libre
+        existing_by_id = TrabajadorSocial.query.filter_by(id_trabajador=data['id_trabajador']).first()
+
+        if not existing_by_id:
+            # ID libre → insertar con ID del coordinador
             trabajador = TrabajadorSocial(
                 id_trabajador=data['id_trabajador'],
                 nombre=data['nombre'],
@@ -590,7 +633,16 @@ def _replicate_trabajador(operation, data):
             db.session.add(trabajador)
             cluster_logger.info(f"[RECV] TRABAJADOR INSERTADO: id={data['id_trabajador']}, {data['nombre']}")
         else:
-            cluster_logger.info(f"[RECV] TRABAJADOR ya existe: id={data['id_trabajador']}")
+            # ID ocupado por OTRO trabajador → insertar sin ID (autoincrement local)
+            cluster_logger.warning(f"[RECV] CONFLICTO ID: {data['id_trabajador']} ocupado por '{existing_by_id.nombre}', insertando '{data['nombre']}' con nuevo ID")
+            trabajador = TrabajadorSocial(
+                nombre=data['nombre'],
+                activo=data.get('activo', True),
+                id_sala=data['id_sala']
+            )
+            db.session.add(trabajador)
+            db.session.flush()
+            cluster_logger.info(f"[RECV] TRABAJADOR INSERTADO CON NUEVO ID: id={trabajador.id_trabajador}, {data['nombre']}")
     elif operation == 'UPDATE':
         trabajador = TrabajadorSocial.query.filter_by(id_trabajador=data['id_trabajador']).first()
         if trabajador:

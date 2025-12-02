@@ -53,10 +53,11 @@ def verificar_recurso_local(flask_app, recurso_tipo: str, recurso_id: int) -> bo
     Returns:
         True si el recurso esta disponible
     """
-    # Los tipos SALA_* son recursos virtuales para serializar operaciones
-    # (SALA_DOCTOR, SALA_TRABAJADOR, etc.)
+    # Recursos virtuales para serializar operaciones:
+    # - SALA_* (SALA_DOCTOR, SALA_TRABAJADOR) - por sala
+    # - *_CREATE (DOCTOR_CREATE, TRABAJADOR_CREATE) - globales
     # La disponibilidad real se verifica en el 2PC, aquí solo permitimos el lock
-    if recurso_tipo.startswith("SALA_"):
+    if recurso_tipo.startswith("SALA_") or recurso_tipo.endswith("_CREATE"):
         logger.info(f"[LOCK] Recurso virtual {recurso_tipo}_{recurso_id} - permitiendo lock")
         return True
 

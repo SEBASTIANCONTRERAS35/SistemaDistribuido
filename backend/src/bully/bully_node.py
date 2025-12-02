@@ -796,7 +796,24 @@ class BullyNode:
         self.comm.register_tcp_handler(CONSENSUS_REQUEST, consensus_handler)
         self.comm.register_tcp_handler(TWO_PC_REQUEST, two_pc_handler)
 
-        logger.info(f"[Node-{self.node_id}] [LOCKS] Handlers registered: LOCK_REQUEST, UNLOCK_REQUEST, CONSENSUS_REQUEST, TWO_PC_REQUEST")
+        # Handler para solicitudes de ID (solo el líder responde)
+        from bully.id_manager import ID_REQUEST, ID_RESPONSE, handle_id_request
+
+        def id_request_handler(msg):
+            # Solo responder si somos el líder
+            if not self.is_leader():
+                from bully.communication import Message
+                return Message(
+                    type=ID_RESPONSE,
+                    sender_id=self.node_id,
+                    timestamp=time.time(),
+                    data={'success': False, 'error': 'No soy el líder'}
+                )
+            return handle_id_request(msg, self.flask_app, self.node_id)
+
+        self.comm.register_tcp_handler(ID_REQUEST, id_request_handler)
+
+        logger.info(f"[Node-{self.node_id}] [LOCKS] Handlers registered: LOCK_REQUEST, UNLOCK_REQUEST, CONSENSUS_REQUEST, TWO_PC_REQUEST, ID_REQUEST")
 
     def set_flask_app(self, flask_app):
         """
